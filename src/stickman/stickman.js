@@ -36,6 +36,10 @@ export class Stickman {
     this.glitch = 0;
     this.aura = null;
     this.dropThrough = 0;
+    this.hover = 0;        // levitation height (meditating)
+    this.alpha = 1;        // fades out when stepping through portals
+    this.speedMul = 1;     // skateboarding
+    this.moonwalk = false;
     this.setScale(game.settings.scale || 1);
   }
 
@@ -265,7 +269,7 @@ export class Stickman {
           this.jumpTo(tx, goalPl.y);
           return;
         }
-        speed = (this.goal.run ? 230 : 80) * this.scale * (this.st.slow > 0 ? 0.4 : 1);
+        speed = (this.goal.run ? 230 : 80) * this.scale * (this.st.slow > 0 ? 0.4 : 1) * this.speedMul;
         this.dir = sign(dx);
         const nx = this.x + this.dir * speed * dt;
         // jump off our platform toward the target if we'd walk off the edge
@@ -275,9 +279,10 @@ export class Stickman {
         const tx = clamp(this.goal.x, pl.x1 + 4, pl.x2 - 4);
         const dx = tx - this.x;
         if (Math.abs(dx) > 3) {
-          speed = (this.goal.run ? 230 : 80) * this.scale * (this.st.slow > 0 ? 0.4 : 1);
+          speed = (this.goal.run ? 230 : 80) * this.scale * (this.st.slow > 0 ? 0.4 : 1) * this.speedMul * (this.moonwalk ? 0.6 : 1);
           this.dir = sign(dx);
           this.x += this.dir * Math.min(Math.abs(dx), speed * dt);
+          if (this.moonwalk) this.dir = -this.dir; // face away from where he's gliding
         } else {
           this.goal = null;
         }
@@ -290,7 +295,7 @@ export class Stickman {
     if (!target) {
       if (frozen) target = this.cur;
       else if (this.st.dizzy > 0) target = POSES.dizzy(this.t);
-      else if (speed > 0) target = (this.goal?.run ? POSES.run : POSES.walk)(this.t, this.phase);
+      else if (speed > 0) target = (this.goal?.run ? POSES.run : POSES.walk)(this.t, this.moonwalk ? 1 - this.phase : this.phase);
       else if (this.stance === 'guard') target = POSES.guard(this.t);
       else target = POSES.stand(this.t);
     }
@@ -300,7 +305,7 @@ export class Stickman {
   updateAir(dt, actionPose) {
     const g = this.g;
     const prevY = this.y;
-    this.vy += GRAVITY * dt * (this.st.slow > 0 ? 0.35 : 1);
+    this.vy += GRAVITY * dt * (this.st.slow > 0 ? 0.35 : 1) * (this.airPose === 'slam' && this.vy > -300 ? 2.6 : 1);
     this.x += this.vx * dt * (this.st.slow > 0 ? 0.4 : 1);
     this.y += this.vy * dt * (this.st.slow > 0 ? 0.4 : 1);
     if (this.x < 8) { this.x = 8; this.vx = Math.abs(this.vx) * 0.3; }
@@ -331,6 +336,7 @@ export class Stickman {
     if (!target) {
       if (this.flip) target = POSES.tuck(this.t);
       else if (this.airPose === 'flyingKick') target = POSES.flyingKick(this.t);
+      else if (this.airPose === 'slam') target = this.vy < 0 ? POSES.tuck(this.t) : POSES.slam(this.t);
       else target = this.vy < 0 ? POSES.jump(this.t) : POSES.fall(this.t);
     }
     blendPose(this.cur, target, damp(16, dt));
@@ -366,12 +372,12 @@ export class Stickman {
 
   computePoseJoints(p = this.cur) {
     const J0 = fk(p, this.x, 0, this.dir, this.d);
-    if (this.mode === 'ground' && this.sitting && this.action?.name === 'sit') {
+    if (this.mode === 'ground' && this.sitting && (this.action?.name === 'sit' || this.action?.name === 'fish')) {
       const dy = this.y - 3;
       for (const k in J0) J0[k][1] += dy;
     } else if (this.mode === 'ground' || this.mode === 'getup') {
       const off = lowestOffset(J0, this.d);
-      const dy = this.y - off;
+      const dy = this.y - off - (this.mode === 'ground' ? this.hover : 0);
       for (const k in J0) J0[k][1] += dy;
     } else {
       const dy = this.y - this.legLen * 0.95;
@@ -434,7 +440,7 @@ export class Stickman {
     drawRig(gx, this.J, this.d, this.dir, {
       color: this.st.frozen > 0 ? '#9fd3ff' : g.settings.color,
       face, lookAt: this.lookAt,
-      alpha: flicker ? 0.55 : 1,
+      alpha: (flicker ? 0.55 : 1) * this.alpha,
       glitch: this.glitch,
       aura: this.aura || (this.st.burn > 0 ? '#ff5a1f' : null),
     });

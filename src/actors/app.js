@@ -145,7 +145,7 @@ export class AppActor {
       this.x += this.vx * dt; this.y += this.vy * dt;
       this.x = clamp(this.x, SIZE / 2, g.w - SIZE / 2);
       if (this.vy > 0) {
-        const pl = landing(g.platforms, this.x, py, this.y);
+        const pl = landing(g.appPlatforms || g.platforms, this.x, py, this.y);
         if (pl) {
           this.y = pl.y; this.mode = 'ground'; this.platKey = pl.key; this.vx = 0;
           if (this.vy > 600) this.squash = 1;
@@ -159,7 +159,7 @@ export class AppActor {
     // ground
     let pl = this.platKey ? g.platformByKey(this.platKey) : null;
     if (pl && (this.x < pl.x1 - 4 || this.x > pl.x2 + 4 || Math.abs(pl.y - this.y) > 30)) pl = null;
-    if (!pl) pl = platformUnder(g.platforms, this.x, this.y, 3);
+    if (!pl) pl = platformUnder(g.appPlatforms || g.platforms, this.x, this.y, 3);
     if (!pl || pl.y - this.y > 3) { this.mode = 'air'; this.vy = 0; return; }
     if (this.lastX1 !== undefined && pl.key === this.platKey) this.x += pl.x1 - this.lastX1;
     this.y = pl.y; this.platKey = pl.key; this.lastX1 = pl.x1;

@@ -50,6 +50,7 @@ export class Drawn extends Thing {
   update(dt, g) {
     if (this.heldBy) { this.hitCd = Math.max(0, this.hitCd - dt); return; }
     super.update(dt, g);
+    this.ai?.(dt, g);
     const M = MATERIALS[this.material];
     if (this.material === 'fire' && Math.random() < 0.35) {
       const p = pick(this.body.worldPts());
@@ -75,6 +76,7 @@ export class Drawn extends Thing {
   draw(gx) {
     const M = MATERIALS[this.material];
     const pts = this.body.worldPts();
+    this.extraDraw?.(gx);
     gx.save();
     gx.lineCap = 'round'; gx.lineJoin = 'round';
     if (this.life < 1) gx.globalAlpha = Math.max(0, this.life);
@@ -139,6 +141,15 @@ export function shapePoints(kind, x, y, dir = 1, s = 1) {
   } else if (kind === 'box') {
     const w = 24 * s;
     P.push({ x: x - w, y: y - w }, { x: x + w, y: y - w }, { x: x + w, y: y + w }, { x: x - w, y: y + w }, { x: x - w, y: y - w });
+  } else if (kind === 'triangle') {
+    const r = 26 * s;
+    for (let i = 0; i <= 3; i++) { const a = -Math.PI / 2 + (i / 3) * TAU; P.push({ x: x + Math.cos(a) * r, y: y + Math.sin(a) * r }); }
+  } else if (kind === 'zigzag') {
+    for (let i = 0; i <= 5; i++) P.push({ x: x + dir * i * 16 * s, y: y + (i % 2 ? 26 : 0) * s });
+  } else if (kind === 'vee') {
+    P.push({ x: x - 24 * s, y: y - 24 * s }, { x, y: y + 16 * s }, { x: x + 24 * s, y: y - 24 * s });
+  } else if (kind === 'arc') {
+    for (let i = 0; i <= 12; i++) { const t = -1.2 + (2.4 * i) / 12; P.push({ x: x - dir * Math.cos(t) * 40 * s, y: y + Math.sin(t) * 40 * s }); }
   } else if (kind === 'spear') {
     const L = 120 * s;
     for (let i = 0; i <= 12; i++) P.push({ x: x + dir * (i / 12) * L, y: y - (i / 12) * L * 0.15 });
@@ -206,6 +217,12 @@ export class FileCopy extends Thing {
     const v = this.body.speed();
     super.update(dt, g);
     if (this.lastImpact > 700 && v > 700) this.damage(g, 1);
+    // once it has settled, hop back upright so the icon is readable (and standable) again
+    const b = this.body;
+    if (!b.static && !b.held && b.ground && b.sleep > 0.6) {
+      b.a = 0; b.static = true; b.y = b.ground.y - 24;
+      g.fx.dust(b.x, b.ground.y, 3);
+    }
     if (this.body.y > g.h + 200) this.shatter(g);
   }
 
@@ -462,6 +479,15 @@ export class Projectile {
       gx.translate(this.x, this.y); gx.rotate(this.t * 6);
       gx.strokeText(this.text, 0, 0);
       gx.fillStyle = this.color; gx.fillText(this.text, 0, 0);
+    } else if (this.type === 'arrow') {
+      const a = Math.atan2(this.vy, this.vx);
+      gx.translate(this.x, this.y); gx.rotate(a);
+      gx.strokeStyle = this.color; gx.lineWidth = 2.5; gx.lineCap = 'round';
+      gx.beginPath(); gx.moveTo(-22, 0); gx.lineTo(0, 0); gx.stroke();
+      gx.fillStyle = '#333';
+      gx.beginPath(); gx.moveTo(4, 0); gx.lineTo(-4, -4); gx.lineTo(-4, 4); gx.closePath(); gx.fill();
+      gx.strokeStyle = '#e63946'; gx.lineWidth = 2;
+      gx.beginPath(); gx.moveTo(-22, 0); gx.lineTo(-27, -4); gx.moveTo(-22, 0); gx.lineTo(-27, 4); gx.stroke();
     } else if (this.type === 'beam') {
       gx.strokeStyle = this.color; gx.lineWidth = 4; gx.shadowColor = this.color; gx.shadowBlur = 10;
       gx.beginPath(); gx.moveTo(this.x, this.y); gx.lineTo(this.x - this.vx * 0.04, this.y - this.vy * 0.04); gx.stroke();

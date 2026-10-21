@@ -367,4 +367,54 @@ export const POSES = {
       ua1: 2.7, la1: 3.0, ua2: 2.8, la2: 3.1,
     });
   },
+  meditate: (t) => pose({
+    lean: 0, head: -0.05 + 0.05 * S(t * 0.8),
+    ua1: 0.35, la1: 1.75, ua2: 0.45, la2: 1.85,
+    th1: 1.15, sh1: -2.05, th2: 1.3, sh2: -1.85,
+  }),
+  handstand: (t, p = 0) => pose({
+    rot: Math.PI, lean: 0, head: 0.2,
+    ua1: -0.15 + 0.15 * S(t * 6), la1: -0.15 + 0.15 * S(t * 6), ua2: 0.15 - 0.15 * S(t * 6), la2: 0.15 - 0.15 * S(t * 6),
+    th1: -0.25 + 0.1 * S(t * 3), sh1: -0.6, th2: 0.25 + 0.1 * S(t * 3), sh2: 0.5,
+  }),
+  stretch: (t, k = 0) => {
+    const e = Math.sin(Math.min(1, k) * Math.PI);
+    return pose({
+      lean: -0.35 * e, head: 0.4 * e,
+      ua1: lerp(-0.2, 2.6, e), la1: lerp(-0.1, 2.9, e), ua2: lerp(0.2, 2.7, e), la2: lerp(0.2, 3.0, e),
+      th1: -0.12, sh1: -0.12, th2: 0.12, sh2: 0.12,
+    });
+  },
+  sneeze: (t, k = 0) => {
+    const back = k < 0.6 ? k / 0.6 : 0, snap = k >= 0.6 ? 1 - (k - 0.6) / 0.4 : 0;
+    return pose({
+      lean: -0.45 * back + 0.7 * snap, head: 0.5 * back - 0.4 * snap,
+      ua1: 0.3, la1: 2.4 * back + 0.6, ua2: 0.4, la2: 2.5 * back + 0.7,
+      th1: -0.2, sh1: -0.2, th2: 0.2, sh2: 0.2 - 0.3 * snap,
+    });
+  },
+  skate: (t) => pose({
+    lean: 0.15 + 0.05 * S(t * 2), head: -0.1,
+    ua1: -1.2 + 0.15 * S(t * 3), la1: -0.9, ua2: 1.1 + 0.15 * S(t * 3 + 1), la2: 1.3,
+    th1: -0.55, sh1: -0.1, th2: 0.75, sh2: -0.15,
+  }),
+  juggle: (t) => pose({
+    lean: 0.02, head: -0.35,
+    ua1: 0.9 + 0.35 * S(t * 9), la1: 2.0 + 0.4 * S(t * 9), ua2: 0.9 + 0.35 * S(t * 9 + Math.PI), la2: 2.0 + 0.4 * S(t * 9 + Math.PI),
+    th1: -0.15, sh1: -0.15, th2: 0.15, sh2: 0.15,
+  }),
+  fish: (t) => pose({
+    lean: 0.05, head: 0.05 * S(t),
+    ua1: 1.0, la1: 1.5, ua2: 1.15, la2: 1.65 + 0.04 * S(t * 3),
+    th1: 1.45, sh1: 0.15 + 0.3 * S(t * 2), th2: 1.55, sh2: 0.1 + 0.3 * S(t * 2 + 1.7),
+  }),
+  slam: () => pose({
+    lean: 0.6, head: -0.3, ua1: 2.9, la1: 2.9, ua2: 2.8, la2: 2.8,
+    th1: 1.6, sh1: -0.5, th2: 1.8, sh2: -0.3,
+  }),
+  ride: (t) => pose({
+    lean: 0.1 + 0.04 * S(t * 6), head: 0.1,
+    ua1: 2.2, la1: 2.6, ua2: 0.9 + 0.2 * S(t * 4), la2: 2.4,
+    th1: -0.55, sh1: -0.2, th2: 0.55, sh2: 0.2,
+  }),
 };

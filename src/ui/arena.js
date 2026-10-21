@@ -3,6 +3,7 @@
 // Eraser, Bomb and Lightning, plus buttons that summon your apps as allies.
 // Every tool only paints on the game layer. Nothing on your computer is touched.
 import { Drawn, Bomb, MATERIALS, drawInk } from '../world/objects.js';
+import { classify, makeItem, ITEMS } from '../world/sketch.js';
 import { artImage } from '../actors/art.js';
 import { APPS } from '../actors/lore.js';
 import { clamp, rand, pick, dist, TAU } from '../util.js';
@@ -34,6 +35,10 @@ export class Arena {
     this.bind();
     this.setTool('pencil');
     this.toast('📸 Snapshot taken. You\'re fighting on a copy of your desktop: nothing real can break. Esc ends the fight.', 5200);
+    if (!game.ctx.storage.get('sawBook', false)) {
+      game.ctx.storage.set('sawBook', true);
+      setTimeout(() => { if (this.el.isConnected) this.toggleBook(true); }, 1800);
+    } else setTimeout(() => this.el.isConnected && this.toast('Tip: press B or 📖 to see which shapes become weapons.'), 5600);
   }
 
   html() {
@@ -50,6 +55,16 @@ export class Arena {
         ${tools}
         <div class="ds-mats">${mats}</div>
         <div class="ds-ink" title="Ink"><u></u></div>
+        <button class="ds-tool ds-book-btn" data-act="book" title="Sketchbook: shapes that become weapons (B)"><span>📖</span></button>
+      </div>
+      <div class="ds-hud ds-book">
+        <h3>📖 Sketchbook <small>draw roughly. Close is good enough</small></h3>
+        <div class="ds-book-grid">${Object.entries(ITEMS).map(([k, it]) => `
+          <div class="ds-card" data-item="${k}">
+            <svg viewBox="0 0 64 44"><path d="${it.path}"/></svg>
+            <b>${it.emoji} ${it.name}</b><i>${it.how}</i><span>${it.tip}</span>
+          </div>`).join('')}</div>
+        <p>Inks combine: a 🔥 fire spear burns him, an ❄️ ice crate freezes him. Anything else you draw is a physical object.</p>
       </div>
       <div class="ds-hud ds-bottom">
         <div class="ds-allies">${allies}</div>
@@ -71,6 +86,7 @@ export class Arena {
         else if (btn.dataset.mat) { this.material = btn.dataset.mat; this.setTool('pencil'); }
         else if (btn.dataset.ally) this.summon(btn.dataset.ally);
         else if (btn.dataset.act === 'restore') this.restore();
+        else if (btn.dataset.act === 'book') this.toggleBook();
         else if (btn.dataset.act === 'end') this.g.endFight('truce');
         return;
       }
@@ -89,6 +105,12 @@ export class Arena {
 
   destroy() { this.el.remove(); }
 
+  toggleBook(on) {
+    const b = this.$('.ds-book');
+    const show = on ?? !b.classList.contains('show');
+    b.classList.toggle('show', show);
+  }
+
   setTool(id) {
     this.tool = id;
     for (const b of this.el.querySelectorAll('.ds-tool')) b.classList.toggle('on', b.dataset.tool === id);
@@ -99,6 +121,7 @@ export class Arena {
   key(k) {
     if (k.type !== 'keydown' || this.g.mode !== 'fight') return;
     if (k.key === 'Escape') return this.g.endFight('truce');
+    if (k.key === 'b' || k.key === 'B') return this.toggleBook();
     const n = parseInt(k.key, 10);
     if (n >= 1 && n <= TOOLS.length) this.setTool(TOOLS[n - 1].id);
     const mk = { q: 'ink', w: 'fire', e: 'ice', r: 'bouncy' }[k.key?.toLowerCase()];
@@ -261,8 +284,23 @@ export class Arena {
     for (let i = 1; i < st.pts.length; i++) L += Math.hypot(st.pts[i].x - st.pts[i - 1].x, st.pts[i].y - st.pts[i - 1].y);
     if (L < 12) return;
     const obj = new Drawn(st.pts, st.material, 'user');
+    const rec = classify(st.pts, g.stick);
     g.addObject(obj);
-    if (obj.isStick && Math.random() < 0.3) this.toast('A stick! Grab it with the Hand and swing it… but he can steal it too.');
+    if (rec) {
+      const it = ITEMS[rec.kind];
+      makeItem(g, obj, rec.kind, rec.info, 'user');
+      g.fx.popText(obj.body.x, obj.body.y - 30, `${it.emoji} ${it.name.toUpperCase()}!`, '#fff3b0', 18);
+      g.fx.burst(obj.body.x, obj.body.y, { count: 10, color: ['#fff3b0', '#ffd166'], speed: 160, life: 0.5, size: 3, gravity: 0 });
+      g.sfx('pop');
+      this.highlight(rec.kind);
+      g.brain.onUserItem?.(rec.kind);
+    } else if (obj.isStick && Math.random() < 0.3) this.toast('A stick! Grab it with the Hand and swing it… but he can steal it too.');
+  }
+
+  highlight(kind) {
+    const c = this.el.querySelector(`.ds-card[data-item="${kind}"]`);
+    if (!c) return;
+    c.classList.remove('hit'); void c.offsetWidth; c.classList.add('hit');
   }
 
   erase(x, y, dt) {

@@ -5,6 +5,8 @@
 // throws things, fires energy blasts, possesses apps and pelts you with fake errors.
 import { line } from '../actors/lore.js';
 import { Drawn, shapePoints, Projectile, Popup, Ball } from '../world/objects.js';
+import { makeItem } from '../world/sketch.js';
+import { installTricks } from './tricks.js';
 import { GRAVITY } from '../world/physics.js';
 import { clamp, rand, pick, chance, weighted, sign, dist } from '../util.js';
 import { APPS } from '../actors/lore.js';
@@ -50,6 +52,8 @@ export class Brain {
     this.blastCd -= dt; this.possessCd -= dt; this.popupCd -= dt; this.drawCd -= dt; this.dodgeCd -= dt;
     if (this.g.mode === 'fight') this.fight(dt);
     else this.chill(dt);
+    const floating = this.act?.name === 'meditate' || this.act?.name === 'skate';
+    if (!floating && s.hover) s.hover = s.hover < 0.5 ? 0 : s.hover * Math.exp(-dt * 6);
     // where to look
     const p = this.g.pointer;
     if (this.g.mode === 'fight') s.lookAt = [p.x, p.y];
@@ -117,6 +121,16 @@ export class Brain {
       { w: g.settings.files ? (files.length ? 5 : 2) * mis : 0, f: () => this.actFiles(files) },
       { w: 2.5 * mis, f: () => this.actPrank() },
       { w: g.pointer.x >= 0 ? 4 : 0, f: () => this.actFollowCursor() },
+      { w: 3, f: () => this.actMeditate() },
+      { w: 2.5, f: () => this.actHandstand() },
+      { w: 1.2, f: () => this.actSneeze() },
+      { w: s.plat && s.plat.x2 - s.plat.x1 > 300 ? 3.5 : 0, f: () => this.actSkate() },
+      { w: 3, f: () => this.actJuggle() },
+      { w: g.widgetPlatforms().length ? 3 : 0, f: () => this.actFish() },
+      { w: 2.5, f: () => this.actPortal() },
+      { w: 2.5, f: () => this.actMoonwalk() },
+      { w: 2.5, f: () => this.actPlane() },
+      { w: apps.length ? 2.5 : 0, f: () => this.actRide() },
       { w: N.food < 30 ? 6 : 0, f: () => this.actComplain('hungry') },
       { w: N.fun < 25 ? 5 : 0, f: () => this.actComplain('bored') },
       { w: g.settings.surpriseFights ? (N.anger > 60 ? 30 : 0.5 * mis) : 0, f: () => this.actChallenge() },
@@ -144,7 +158,7 @@ export class Brain {
 
   randomSpot() {
     const g = this.g;
-    const pls = g.platforms.filter((p) => p.x2 - p.x1 > 40 && p.kind !== 'object');
+    const pls = g.platforms.filter((p) => p.x2 - p.x1 > 40 && p.kind !== 'object' && p.kind !== 'app');
     const pl = pick(pls);
     return { pl, x: rand(pl.x1 + 10, pl.x2 - 10) };
   }
@@ -189,7 +203,10 @@ export class Brain {
     this.start('sleep', (dt, a) => {
       if (!g.dormant && chance(dt * 0.6)) { const h = s.head; g.fx.zzz(h.x + 6, h.y - 8); }
       return a.t > dur || (N.energy > 98 && a.t > 10) || s.action?.name !== 'sleep';
-    }, { max: 90, end: () => { if (s.action?.name === 'sleep') s.cancelAction(); if (chance(0.5)) this.say('*stretch* Good nap.'); } });
+    }, { max: 90, end: () => {
+      if (s.action?.name === 'sleep') s.cancelAction();
+      if (!s.disabled) { s.play('stretch', 1.6); this.say(pick(['*yaaawn* Good nap.', '*stretch*', 'Mmm… what did I miss?'])); }
+    } });
   }
 
   actEat(cookie) {
@@ -487,6 +504,7 @@ export class Brain {
     else N.fun = clamp(N.fun + 3, 0, 100);
   }
   onLanded(hard) {
+    if (this.s.slamming) return this.onSlamLand();
     if (this.g.mode === 'fight') return;
     if (hard) { this.s.st.dizzy = 1.8; this.say(line('landed'), true); }
   }
@@ -538,6 +556,8 @@ export class Brain {
     if (ally && this.possessCd <= 0 && lvl >= 2 && g.apps.filter((a) => a.possessed > 0).length === 0) options.push({ w: 12, f: () => this.possess(ally) });
     if (this.popupCd <= 0 && lvl >= 3 && g.objects.filter((o) => o.kind === 'popup').length < 3) options.push({ w: 10, f: () => this.popups() });
     if (cur.y < s.y - 60 && dCur < 420 && lvl >= 2) options.push({ w: 12, f: () => this.flyingKick(cur) });
+    if (lvl >= 2 && g.t > (this.poundCd || 0) && dCur < 500) options.push({ w: 9, f: () => this.groundPound() });
+    if (lvl >= 3 && g.t > (this.teleCd || 0) && dCur > 250) options.push({ w: 9, f: () => this.teleportStrike() });
     const file = g.objects.find((o) => o.kind === 'file' && !o.broken && dist(o.body.x, o.body.y, s.x, s.y) < 300);
     if (file) options.push({ w: 8, f: () => this.smashFile(file) });
     if (ally && dist(ally.center.x, ally.center.y, c.x, c.y) < 300) options.push({ w: 10, f: () => this.approach(ally.center, true) });
@@ -604,11 +624,11 @@ export class Brain {
     this.think = rand(0.6, 1.2);
   }
 
-  melee(tg) {
+  melee(tg, forced) {
     const s = this.s, g = this.g;
     s.stop();
     s.faceTo(tg.x);
-    const kind = pick(['punch', 'punch', 'kick', 'uppercut']);
+    const kind = forced || pick(['punch', 'punch', 'kick', 'uppercut']);
     const dur = kind === 'kick' ? 0.42 : 0.32;
     const limb = kind === 'kick' ? 'f2' : 'h2';
     const dmg = { punch: 6, kick: 9, uppercut: 11 }[kind] + g.stats.level;
@@ -780,6 +800,22 @@ export class Brain {
     this.drawShape(kind, h.x, h.y, mat, (obj) => { s.takeWeapon(obj); });
   }
 
+  // He watches what you draw. Sometimes he draws the same weapon back at you.
+  onUserItem(kind) {
+    const s = this.s, g = this.g;
+    const map = { spear: 'spear', shuriken: 'star', rocket: 'triangle', lightning: 'zigzag', boomerang: 'vee', bow: 'arc', shield: 'ball' };
+    if (!map[kind] || g.stats.level < 2 || s.disabled || s.busy || !s.onGround || Math.random() > 0.3) return;
+    this.copyCd = this.copyCd || 0;
+    if (g.t < this.copyCd) return;
+    this.copyCd = g.t + 8;
+    const h = s.limb('h2');
+    this.say(pick(['Ooh, nice one. My turn!', 'Copycat time!', 'Two can play this game!']), true);
+    const x = h.x + s.dir * 30, y = h.y - 40;
+    this.drawShape(map[kind], x, y, g.stats.level >= 3 && kind === 'spear' ? 'fire' : 'ink', (obj) => {
+      makeItem(g, obj, kind, { radius: 34 }, 'stick');
+    });
+  }
+
   possess(app) {
     const s = this.s, g = this.g;
     this.possessCd = rand(15, 22);
@@ -839,4 +875,5 @@ export class Brain {
   }
 }
 
-export { Ball };
+
+installTricks(Brain);

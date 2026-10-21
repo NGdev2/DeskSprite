@@ -115,7 +115,15 @@ export class Game {
   // needs and sleep going, and any interaction wakes the loop again.
   listenPointer() {
     if (this.offPointer) return;
-    this.offPointer = this.ctx.on('pointer', (p) => { if (!this.arena) this.pointer = { x: p.x, y: p.y }; });
+    this.offPointer = this.ctx.on('pointer', (p) => {
+      if (this.arena) return;
+      const moved = Math.abs(p.x - this.pointer.x) + Math.abs(p.y - this.pointer.y) > 3;
+      this.pointer = { x: p.x, y: p.y };
+      if (!moved) return;
+      const now = performance.now();
+      if (this.lastMove && now - this.lastMove > 90000) this.brain.onUserReturn?.();
+      this.lastMove = now;
+    });
   }
 
   canDoze() {
@@ -209,6 +217,12 @@ export class Game {
         const bb = o.body.aabb();
         if (bb.x2 - bb.x1 > 36) P.push({ x1: bb.x1 + 4, x2: bb.x2 - 4, y: bb.y1, key: 'o:' + o.id, kind: 'object' });
       }
+    }
+    // apps can be stood on (he rides them), but apps don't stand on each other
+    this.appPlatforms = P.slice();
+    for (const a of this.apps) {
+      if (a.mode !== 'ground' || !a.alive) continue;
+      P.push({ x1: a.x - 18, x2: a.x + 18, y: a.y - 14 - 44, key: 'a:' + a.id, kind: 'app' });
     }
     this.platforms = P;
     this.worldRef = { platforms: P, w };
@@ -501,6 +515,10 @@ export class Game {
     this.fx.flash(0.35, '#fff3d6');
     this.fx.crack(x, y, 1.2 * power);
     this.sfx('boom');
+    if (owner === 'stick' && this.mode === 'fight') {
+      const dp = dist(this.pointer.x, this.pointer.y, x, y);
+      if (dp < R) this.hitDesk(18 * (1 - dp / R) + 4, x, y, true);
+    }
     const s = this.stick;
     const sc = s.center;
     const ds = dist(sc.x, sc.y, x, y);
@@ -553,6 +571,7 @@ export class Game {
     // moving objects vs the stickman
     for (const o of this.objects) {
       if (!o.body || o.dead || o.heldBy === s || o.hitCd > 0) continue;
+      if (o.owner === 'stick' && (o.item || o.life !== Infinity) && !o.thrownAt) continue; // his own toys and doodles don't hurt him
       if (o.thrownAt) { o.thrownAt.t -= dt; if (o.thrownAt.t <= 0) o.thrownAt = null; }
       const b = o.body;
       const v = b.speed();
@@ -583,7 +602,7 @@ export class Game {
       if (hitD > 10) continue;
       o.hitCd = 0.45;
       const mass = clamp(b.m / 6, 0.5, 3);
-      let dmg = fighting ? clamp((v / 90) * mass, 4, 28) : 0;
+      let dmg = fighting ? clamp((v / 90) * mass * (o.dmgMul || 1), 4, 32) : 0;
       if (o.kind === 'textblock') dmg = Math.min(dmg, 7);
       const kx = b.vx * 0.7, ky = b.vy * 0.5 - 250;
       if (fighting) s.hurt(dmg, kx, ky, { obj: o });
@@ -632,6 +651,11 @@ export class Game {
     if (data.cmd === 'fight') this.startFight();
     else if (data.cmd === 'feed') this.feed();
     else if (data.cmd === 'summon') this.summonApp(data.kind || null);
+    else if (data.cmd === 'trick' && this.mode === 'chill' && this.stick.onGround) {
+      // e.g. widgetctl send desksprite '{"cmd":"trick","name":"skate"}'
+      const fn = this.brain['act' + String(data.name || '').replace(/^./, (c) => c.toUpperCase())];
+      if (typeof fn === 'function') { this.brain.act?.end?.(); this.brain.act = null; this.stick.cancelAction(); fn.call(this.brain); }
+    }
     else if (data.cmd === 'pause') { this.paused = true; this.gx.clearRect(0, 0, this.canvas.width, this.canvas.height); }
     else if (data.cmd === 'resume') this.paused = false;
     else if (data.cmd === 'say' && data.text) this.say(this.stick, String(data.text).slice(0, 200), { force: true });
@@ -732,6 +756,7 @@ export class Game {
       const n = Math.max(2, Math.ceil(k.pts.length * k.k));
       drawInk(gx, k.pts.slice(0, n), k.material);
     }
+    this.brain.act?.draw?.(gx);
     this.stick.draw(gx);
     if (this.dormant && this.stick.J) {
       const [hx, hy] = this.stick.J.head;
