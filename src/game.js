@@ -1,0 +1,755 @@
+// The game: owns the world (platforms from your widgets, objects, apps, the stickman),
+// runs the loop, resolves combat, and switches between "chill" and "fight" modes.
+//
+// SAFETY: this module never writes files, never launches apps and never runs commands.
+// Desktop files and apps are read once (names and icons only) to make visual copies.
+import { Stickman } from './stickman/stickman.js';
+import { Brain } from './stickman/brain.js';
+import { AppActor } from './actors/app.js';
+import { ARCHETYPES, archetypeFor } from './actors/art.js';
+import { line } from './actors/lore.js';
+import { FX } from './fx/fx.js';
+import { Sound } from './fx/sound.js';
+import { FileCopy, Ball, Cookie, drawInk, Projectile } from './world/objects.js';
+import { platformUnder } from './world/physics.js';
+import { Arena } from './ui/arena.js';
+import { Hitboxes } from './ui/hitboxes.js';
+import { clamp, rand, pick, chance, dist, TAU } from './util.js';
+
+const DEFAULT_STATS = { energy: 85, fun: 70, food: 75, anger: 0, xp: 0, level: 1, wins: 0, losses: 0, fights: 0, bonds: {}, apps: [] };
+const FAKE_FILES = [
+  { name: 'homework_final_v3.docx', kind: 'file' },
+  { name: 'Photos', kind: 'dir' },
+  { name: 'secret_plans.txt', kind: 'file' },
+  { name: 'cat.png', kind: 'file', mime: 'image/png' },
+  { name: 'Projects', kind: 'dir' },
+];
+
+export class Game {
+  constructor(ctx) {
+    this.ctx = ctx;
+    this.mode = 'chill';
+    this.t = 0;
+    this.timeScale = 1;
+    this.warpT = 0;
+    this.objects = [];
+    this.projectiles = [];
+    this.apps = [];
+    this.sketches = [];
+    this.timers = [];
+    this.pointer = { x: -1, y: -1 };
+    this.widgetRects = [];
+    this.platforms = [];
+    this.platMap = new Map();
+    this.fx = new FX(this);
+    this.sound = new Sound();
+    this.ink = 100; this.maxInk = 100;
+    this.deskHp = 100;
+    this.challenge = false;
+    this.maxApps = 4;
+    this.engaged = new Set();   // apps actively fighting (the rest cheer)
+    this.bubbles = new Map();
+    this.hostApps = null;
+    this.hostFiles = null;
+    this.stats = { ...DEFAULT_STATS, ...(ctx.shared.get('stats', {}) || {}) };
+    this.stats.bonds = this.stats.bonds || {};
+    this.settings = ctx.settings;
+    this.sound.on = !!this.settings.sound;
+    this.resize();
+  }
+
+  get w() { return this.size.w; }
+  get h() { return this.size.h; }
+  get world() { return this.worldRef; }
+
+  // ---------------------------------------------------------------- setup
+  async start() {
+    const ctx = this.ctx;
+    this.layer = ctx.overlay.create({ className: 'ds-layer' });
+    this.canvas = document.createElement('canvas');
+    this.canvas.className = 'ds-canvas';
+    this.layer.append(this.canvas);
+    this.gx = this.canvas.getContext('2d');
+    this.fitCanvas();
+    this.hit = new Hitboxes(this);
+    this.refreshWidgets();
+    this.rebuildPlatforms();
+
+    const nest = this.nestRect();
+    this.stick = new Stickman(this, nest ? nest.x + nest.w / 2 : this.w / 2, nest ? nest.y - 200 : 100);
+    this.brain = new Brain(this, this.stick);
+
+    ctx.on('layout', () => { this.refreshWidgets(); this.wake(); }); // his bed may have moved
+    ctx.on('resize', () => this.refreshWidgets());
+    ctx.on('move', () => this.refreshWidgets());
+    this.listenPointer();
+    ctx.on('visibility', ({ visible }) => { this.hidden = !visible; });
+    ctx.on('settings', (s) => {
+      this.wake();
+      this.settings = s;
+      this.sound.on = !!s.sound;
+      this.stick.setScale(s.scale || 1);
+    });
+    ctx.on('key', (k) => this.arena?.key(k));
+    ctx.on('message', ({ data }) => this.onMessage(data));
+    ctx.every(1000, () => { this.refreshWidgets(); if (this.dormant) this.dormantTick(1); });
+    ctx.every(10000, () => this.save());
+    this.stopLoop = ctx.raf((dt) => this.frame(dt));
+
+    // read-only snapshots of what's on this computer (names and icons only)
+    ctx.host.apps?.().then((a) => { this.hostApps = Array.isArray(a) ? a : []; this.restoreApps(); }).catch(() => { this.hostApps = []; this.restoreApps(); });
+    ctx.host.desktopItems?.().then((d) => { this.hostFiles = Array.isArray(d) ? d : []; }).catch(() => { this.hostFiles = []; });
+
+    const hour = new Date().getHours();
+    this.after(1500, () => {
+      const name = this.settings.name;
+      if (hour >= 5 && hour < 11) this.say(this.stick, line('morning'));
+      else if (hour >= 23 || hour < 5) this.say(this.stick, line('night'));
+      else this.say(this.stick, pick([`${name} is here!`, 'Hi again!', 'Did you miss me?']));
+    });
+  }
+
+  // ---------------------------------------------------------------- dormancy
+  // While he sleeps and nothing moves, the animation loop and cursor polling stop entirely
+  // (an idle loop still costs the host a full-screen recomposite). A 1 s timer keeps his
+  // needs and sleep going, and any interaction wakes the loop again.
+  listenPointer() {
+    if (this.offPointer) return;
+    this.offPointer = this.ctx.on('pointer', (p) => { if (!this.arena) this.pointer = { x: p.x, y: p.y }; });
+  }
+
+  canDoze() {
+    const s = this.stick;
+    if (this.mode !== 'chill' || this.hit.drag || this.challenge) return false;
+    if (s.action?.name !== 'sleep' || this.brain.act?.name !== 'sleep' || this.brain.act.t < 3 || !s.onGround) return false;
+    const fx = this.fx;
+    if (fx.parts.length || fx.bolts.length || fx.beams.length || fx.rings.length || fx.texts.length || fx.shakeAmp || fx.flashA || fx.glitchT) return false;
+    if (this.projectiles.length || this.sketches.length || this.timers.length) return false;
+    if (this.objects.some((o) => o.body && !o.body.static && (o.body.sleep <= 0.6 || o.body.held) || o.kind === 'bomb' || o.kind === 'popup')) return false;
+    if (this.apps.some((a) => a.mode !== 'ground' || a.goal || a.squash > 0.05 || a.spawnT < 1)) return false;
+    return true;
+  }
+
+  doze() {
+    this.dormant = true;
+    this.stopLoop?.();
+    this.stopLoop = null;
+    this.offPointer?.();
+    this.offPointer = null;
+    this.render();
+  }
+
+  dormantTick(dt) {
+    this.brain.update(dt);
+    if (this.stick.action) { this.stick.action.t += dt; }
+    if (this.stick.action?.name !== 'sleep' || this.brain.act?.name !== 'sleep') this.wake();
+  }
+
+  wake() {
+    if (!this.dormant) return;
+    this.dormant = false;
+    this.listenPointer();
+    this.stopLoop = this.ctx.raf((dt) => this.frame(dt));
+  }
+
+  destroy() {
+    this.save();
+    if (this.arena) this.arena.destroy();
+    this.hit?.destroy();
+    for (const b of this.bubbles.values()) b.close?.();
+  }
+
+  save() {
+    this.stats.apps = this.apps.filter((a) => !a.dead).map((a) => a.kind);
+    this.ctx.shared.set('stats', this.stats);
+  }
+
+  resize() {
+    this.size = this.ctx.desktop.size();
+    this.worldRef = { platforms: this.platforms, w: this.size.w };
+  }
+
+  fitCanvas() {
+    const { w, h } = this.size;
+    const dpr = Math.min(2, window.devicePixelRatio || 1);
+    this.dpr = dpr;
+    this.layer.style.width = w + 'px';
+    this.layer.style.height = h + 'px';
+    this.canvas.width = Math.round(w * dpr);
+    this.canvas.height = Math.round(h * dpr);
+    this.canvas.style.width = w + 'px';
+    this.canvas.style.height = h + 'px';
+  }
+
+  refreshWidgets() {
+    try { this.widgetRects = this.ctx.desktop.widgets().filter((w) => !w.expanded); } catch { this.widgetRects = []; }
+    const s = this.ctx.desktop.size();
+    if (s.w !== this.size.w || s.h !== this.size.h) { this.resize(); this.fitCanvas(); }
+  }
+
+  nestRect() {
+    const me = this.widgetRects.find((w) => w.id === this.ctx.id);
+    return me ? me.rect : null;
+  }
+
+  rebuildPlatforms() {
+    const P = [];
+    const { w, h } = this.size;
+    this.floor = { x1: 0, x2: w, y: h - 2, key: 'floor', kind: 'floor' };
+    P.push(this.floor);
+    for (const wd of this.widgetRects) {
+      const r = wd.rect;
+      if (r.w < 30 || r.y < 110 * (this.settings.scale || 1)) continue; // no room to stand above it
+      P.push({ x1: r.x + 4, x2: r.x + r.w - 4, y: r.y, key: 'w:' + wd.id, kind: 'widget', mine: wd.id === this.ctx.id });
+    }
+    for (const o of this.objects) {
+      if (o.kind === 'file' && o.solid) {
+        P.push({ x1: o.body.x - 22, x2: o.body.x + 22, y: o.body.y - 24, key: 'o:' + o.id, kind: 'file' });
+      } else if (o.body && !o.heldBy && o.body.sleep > 0.6 && (o.kind === 'textblock' || (o.kind === 'drawn' && o.closed))) {
+        const bb = o.body.aabb();
+        if (bb.x2 - bb.x1 > 36) P.push({ x1: bb.x1 + 4, x2: bb.x2 - 4, y: bb.y1, key: 'o:' + o.id, kind: 'object' });
+      }
+    }
+    this.platforms = P;
+    this.worldRef = { platforms: P, w };
+    this.platMap.clear();
+    for (const p of P) this.platMap.set(p.key, p);
+  }
+
+  platformByKey(k) { return this.platMap.get(k) || null; }
+  widgetPlatforms() { return this.platforms.filter((p) => p.kind === 'widget' && p.x2 - p.x1 > 40); }
+  platformUnderPoint(x, y) { return platformUnder(this.platforms, clamp(x, 1, this.w - 1), y, 0) || this.floor; }
+
+  // ---------------------------------------------------------------- helpers used by actors
+  after(ms, fn) {
+    this.timers.push({ t: ms / 1000, fn });
+  }
+
+  sfx(name) { this.sound.play(name); }
+
+  say(entity, text, opts = {}) {
+    if (!text) return;
+    if (!this.settings.talk && !opts.force && entity === this.stick && this.mode !== 'fight') return;
+    const el = this.hit?.anchorFor(entity);
+    const prev = this.bubbles.get(entity);
+    try { prev?.close(); } catch { /* bubble already gone */ }
+    const duration = opts.duration || clamp(1800 + text.length * 55, 2200, 6000);
+    try {
+      const b = this.ctx.say(text, { anchor: el || { x: entity.center.x, y: entity.center.y - 40 }, duration });
+      this.bubbles.set(entity, b);
+    } catch { /* host without bubbles */ }
+    if (entity.saying !== undefined || entity instanceof AppActor) entity.saying = 0.6;
+    this.sfx('blip');
+  }
+
+  addObject(o) {
+    this.objects.push(o);
+    // keep the world from filling up: fade out the oldest drawings
+    const drawn = this.objects.filter((x) => x.kind === 'drawn' && !x.heldBy && x.life === Infinity);
+    if (drawn.length > 24) drawn[0].life = 1;
+    return o;
+  }
+
+  addXp(n) {
+    const S = this.stats;
+    S.xp += n;
+    const need = 40 + S.level * 30;
+    if (S.xp >= need) {
+      S.xp -= need;
+      S.level++;
+      const h = this.stick.head;
+      this.ctx.particles.burst({ x: h.x, y: h.y, preset: 'confetti', count: 40 });
+      this.say(this.stick, `Level ${S.level}! ${S.level === 2 ? 'I learned to draw weapons and possess apps.' : S.level === 3 ? 'Fire weapons and fake errors unlocked.' : S.level === 4 ? 'Double energy blast!' : 'I feel stronger.'}`, { force: true });
+      this.save();
+    }
+  }
+
+  bond(kind, n) {
+    this.stats.bonds[kind] = clamp((this.stats.bonds[kind] || 0) + n, -100, 100);
+  }
+
+  timeWarp(scale, secs) { this.timeScale = scale; this.warpT = secs; }
+
+  // ---------------------------------------------------------------- apps & files
+  pickAppKind(kind) {
+    const present = new Set(this.apps.map((a) => a.kind));
+    const real = (this.hostApps || []).map((a) => ({ a, k: archetypeFor(a) })).filter((x) => x.k);
+    if (kind) {
+      const r = real.find((x) => x.k === kind);
+      return { kind, info: r ? { name: r.a.name, iconUrl: r.a.iconUrl } : {} };
+    }
+    const fresh = real.filter((x) => !present.has(x.k));
+    if (fresh.length && chance(0.75)) {
+      const r = pick(fresh);
+      return { kind: r.k, info: { name: r.a.name, iconUrl: r.a.iconUrl } };
+    }
+    const k = pick(ARCHETYPES.filter((a) => !present.has(a))) || pick(ARCHETYPES);
+    return this.pickAppKind(k);
+  }
+
+  summonApp(kind = null, x = null, y = null, quiet = false) {
+    this.wake();
+    if (this.apps.length >= this.maxApps + (this.mode === 'fight' ? 2 : 0)) {
+      // retire the oldest so the newcomer has room
+      const old = this.apps.find((a) => a.possessed <= 0);
+      if (old) this.removeApp(old);
+    }
+    const pk = this.pickAppKind(kind);
+    x = x ?? rand(80, this.w - 80);
+    const top = Math.max(10, (y ?? this.h) - 260);
+    const app = new AppActor(this, pk.kind, x, top, pk.info);
+    app.vy = 200;
+    this.apps.push(app);
+    if (!quiet) {
+      this.fx.bolt(x + rand(-30, 30), 0, x, (y ?? this.h) - 10);
+      this.sfx('zap');
+      this.after(700, () => app.say(pick([`I'm alive?!`, `${app.name} reporting for duty!`, `Whoa, I have LEGS!`, `Hi! I'm ${app.L.nick}, ${app.L.title}.`])));
+    }
+    return app;
+  }
+
+  removeApp(app) {
+    app.dead = true;
+    const c = app.center;
+    this.fx.burst(c.x, c.y, { count: 12, color: ['#fff', '#bde0fe'], speed: 160, life: 0.6, size: 3, gravity: 0 });
+    this.apps = this.apps.filter((a) => a !== app);
+  }
+
+  restoreApps() {
+    if (!this.settings.apps) return;
+    const kinds = (this.stats.apps || []).slice(0, this.maxApps);
+    if (!kinds.length) {
+      this.after(rand(15000, 30000), () => { if (!this.apps.length && this.settings.apps) this.summonApp(null, null, null); });
+      return;
+    }
+    kinds.forEach((k, i) => this.after(800 + i * 500, () => this.summonApp(k, rand(80, this.w - 80), null, true)));
+  }
+
+  nextFileItem() {
+    const items = this.hostFiles && this.hostFiles.length ? this.hostFiles : FAKE_FILES;
+    const present = new Set(this.objects.filter((o) => o.kind === 'file').map((o) => o.item.name));
+    return items.find((i) => !present.has(i.name)) || null;
+  }
+
+  spawnFileCopy(x, plat) {
+    const item = this.nextFileItem();
+    if (!item) return null;
+    const s = this.stick;
+    plat = plat || platformUnder(this.platforms, s.x, s.y, 3) || this.floor;
+    x = x ?? clamp(s.x + s.dir * rand(50, 110), plat.x1 + 26, plat.x2 - 26);
+    const f = new FileCopy(item, x, plat.y - 24);
+    if (this.mode !== 'fight') f.life = 90;
+    this.addObject(f);
+    this.fx.flash(0.12, '#dff');
+    this.fx.burst(x, plat.y - 24, { count: 12, color: ['#bde0fe', '#ffffff'], speed: 140, life: 0.6, size: 3, gravity: 0 });
+    return f;
+  }
+
+  // ---------------------------------------------------------------- user-facing actions
+  feed() {
+    this.wake();
+    const s = this.stick;
+    const x = clamp(s.x + rand(-140, 140), 30, this.w - 30);
+    this.addObject(new Cookie(x, Math.max(10, s.y - 300)));
+    this.sfx('pop');
+  }
+
+  ball() {
+    this.wake();
+    const s = this.stick;
+    this.addObject(new Ball(clamp(s.x + rand(-160, 160), 30, this.w - 30), Math.max(10, s.y - 300), { vx: rand(-100, 100) }));
+  }
+
+  callHome() {
+    this.wake();
+    const pl = this.platforms.find((p) => p.mine);
+    if (!pl) return;
+    this.brain.act = null;
+    this.stick.walkTo((pl.x1 + pl.x2) / 2, pl, true);
+    this.say(this.stick, 'Coming home!');
+  }
+
+  pet() {
+    this.wake();
+    this.brain.onPet();
+  }
+
+  startFight() {
+    this.wake();
+    if (this.mode !== 'chill') return; // also not while the last fight is still wrapping up
+    this.brain.cancelChallenge();
+    this.mode = 'fight';
+    const S = this.stats;
+    S.fights++;
+    this.stick.maxHp = 100 + (S.level - 1) * 15;
+    this.stick.hp = this.stick.maxHp;
+    this.stick.stance = 'guard';
+    this.stick.sitting = false;
+    this.stick.cancelAction();
+    this.brain.act = null;
+    if (this.stick.action?.name === 'sleep') this.stick.cancelAction();
+    this.deskHp = 100;
+    this.ink = this.maxInk;
+    this.fightT = 0;
+    this.hit.setInteractive(false);
+    this.arena = new Arena(this);
+    this.ctx.host.focus?.().catch(() => {});
+    // the "snapshot": copies of desktop files appear so they can be smashed safely
+    this.fx.flash(0.6, '#ffffff');
+    this.sfx('crack');
+    if (this.settings.files) {
+      const pls = [this.floor, ...this.widgetPlatforms()];
+      for (let i = 0; i < 6; i++) {
+        const pl = i < 3 ? this.floor : pick(pls);
+        const f = this.spawnFileCopy(rand(pl.x1 + 40, pl.x2 - 40), pl);
+        if (!f) break;
+      }
+    }
+    const allies = this.apps.filter((a) => a.alive).length;
+    for (let i = allies; i < 2; i++) this.after(600 + i * 700, () => this.summonApp(null, rand(100, this.w - 100)));
+    this.say(this.stick, line('fightStart'), { force: true });
+  }
+
+  endFight(winner) {
+    if (this.mode !== 'fight') return;
+    const S = this.stats;
+    const s = this.stick;
+    this.mode = 'ending';
+    if (winner === 'user') {
+      S.wins++;
+      this.addXp(30);
+      s.hp = 0;
+      s.knock(s.dir * -200, -500);
+      s.st.stun = 3;
+      this.sfx('win');
+      this.ctx.particles.burst({ preset: 'confetti', x: this.w / 2, y: this.h / 3, count: 120 });
+      this.after(1200, () => this.say(s, line('lose'), { force: true }));
+      this.arena?.banner('YOU WIN', `${this.settings.name} gives up. Wins: ${S.wins} · Losses: ${S.losses}`);
+    } else if (winner === 'stick') {
+      S.losses++;
+      this.addXp(20);
+      this.sfx('lose');
+      s.cancelAction();
+      s.play('cheer', 2.5);
+      this.say(s, line('win'), { force: true });
+      this.arena?.crash();
+    } else {
+      s.stance = null;
+      this.say(s, pick(['Truce? Truce.', 'Fine, we\'ll finish this later.', 'Running away? Okay.']), { force: true });
+    }
+    S.anger = 0;
+    S.fun = clamp(S.fun + 30, 0, 100);
+    this.save();
+    this.after(winner === 'truce' ? 300 : 4200, () => this.cleanupFight());
+  }
+
+  cleanupFight() {
+    this.mode = 'chill';
+    this.stick.stance = null;
+    this.stick.aura = null;
+    this.stick.hp = this.stick.maxHp;
+    this.timeScale = 1;
+    this.restoreDesktop(true);
+    for (const a of this.apps) { a.possessed = 0; a.st.dance = 0; if (a.down > 0) a.down = 0.5; }
+    this.objects = this.objects.filter((o) => o.kind !== 'popup');
+    for (const o of this.objects) if (o.kind === 'file') o.life = 20;
+    this.arena?.destroy();
+    this.arena = null;
+    this.hit.setInteractive(true);
+    this.pointer = this.ctx.pointer?.() || this.pointer;
+  }
+
+  restoreDesktop(all = false) {
+    this.fx.healCracks();
+    this.deskHp = Math.min(100, this.deskHp + (all ? 100 : 25));
+    for (const o of this.objects) if (o.kind === 'file' && o.broken) o.restore(this);
+    if (all) this.projectiles = [];
+  }
+
+  // ---------------------------------------------------------------- combat rules
+  cursorTarget() { return { x: this.pointer.x, y: this.pointer.y }; }
+
+  hitCursor(dmg, x, y, melee = false) {
+    if (this.mode !== 'fight') return;
+    const near = dist(this.pointer.x, this.pointer.y, x, y) < (melee ? 50 : 34);
+    this.fx.crack(x, y, clamp(dmg / 10, 0.4, 1.6));
+    this.fx.shake(near ? 9 : 4);
+    this.sfx('crack');
+    if (near) {
+      this.hitDesk(dmg, x, y, true);
+      this.fx.flash(0.25, '#ff2a2a');
+    }
+  }
+
+  hitDesk(dmg, x, y, already = false) {
+    if (this.mode !== 'fight') return;
+    this.deskHp = Math.max(0, this.deskHp - dmg);
+    if (!already) { this.fx.crack(x, y, clamp(dmg / 10, 0.4, 1.4)); this.fx.shake(5); }
+    this.fx.popText(x, y - 20, `-${Math.round(dmg)}`, '#ff6b6b', 16);
+    if (this.deskHp < 40) this.fx.glitch(0.25);
+    if (this.deskHp <= 0) this.endFight('stick');
+  }
+
+  healDesk(n) { this.deskHp = Math.min(100, this.deskHp + n); }
+
+  explode(x, y, power = 1, owner = 'user') {
+    const R = 150 * power;
+    this.fx.ring(x, y, R, 'rgba(255,200,120,0.9)', 0.5);
+    this.fx.burst(x, y, { count: 30, color: ['#ffd166', '#ff8a1f', '#ef476f', '#fff'], speed: 520, life: 0.7, size: 4, gravity: 400 });
+    this.fx.burst(x, y, { count: 10, color: 'rgba(90,90,90,0.6)', type: 'dust', speed: 160, life: 1.2, size: 14, gravity: -60 });
+    this.fx.shake(14 * power);
+    this.fx.flash(0.35, '#fff3d6');
+    this.fx.crack(x, y, 1.2 * power);
+    this.sfx('boom');
+    const s = this.stick;
+    const sc = s.center;
+    const ds = dist(sc.x, sc.y, x, y);
+    if (ds < R) {
+      const f = 1 - ds / R;
+      const a = Math.atan2(sc.y - y, sc.x - x);
+      if (this.mode === 'fight' && owner !== 'stick') s.hurt(30 * f + 5, Math.cos(a) * 1400 * f, Math.sin(a) * 1400 * f - 500, { force: true });
+      else s.knock(Math.cos(a) * 1200 * f, Math.sin(a) * 1200 * f - 400);
+    }
+    for (const o of this.objects) {
+      if (!o.body || o.heldBy) continue;
+      const d = dist(o.body.x, o.body.y, x, y);
+      if (d > R) continue;
+      const f = 1 - d / R;
+      const a = Math.atan2(o.body.y - y, o.body.x - x);
+      if (o.kind === 'file') { o.knock(Math.cos(a) * 900 * f, Math.sin(a) * 900 * f - 300); o.damage(this, f > 0.5 ? 3 : 1); }
+      else o.body.push(Math.cos(a) * 900 * f * o.body.m, (Math.sin(a) * 900 * f - 300) * o.body.m, o.body.x + rand(-5, 5), o.body.y);
+    }
+    for (const app of this.apps) {
+      const c = app.center;
+      const d = dist(c.x, c.y, x, y);
+      if (d > R) continue;
+      const f = 1 - d / R;
+      const a = Math.atan2(c.y - y, c.x - x);
+      const friendly = owner === 'user' && app.possessed <= 0;
+      app.hurt((friendly ? 6 : 25) * f, Math.cos(a) * 900 * f, Math.sin(a) * 900 * f - 300);
+    }
+  }
+
+  onStickHurt(dmg) {
+    if (this.mode === 'fight') {
+      if (this.stick.hp <= 0) this.endFight('user');
+      else if (chance(0.3)) this.brain.say(line('hurt'));
+    }
+  }
+
+  onRagImpact(dv) {
+    const s = this.stick;
+    this.fx.dust(s.x, s.y, 6);
+    if (dv > 1400) this.fx.shake(4);
+    if (this.mode === 'fight') s.hurt(clamp(dv / 110, 3, 22), 0, 0, { invuln: 0.35 });
+    else if (dv > 1500) { s.st.dizzy = 2; this.stats.anger = clamp(this.stats.anger + 4, 0, 100); }
+  }
+
+  onLand(vy) { this.brain.onLanded(vy > 1300); }
+
+  combat(dt) {
+    const s = this.stick;
+    const fighting = this.mode === 'fight';
+    // moving objects vs the stickman
+    for (const o of this.objects) {
+      if (!o.body || o.dead || o.heldBy === s || o.hitCd > 0) continue;
+      if (o.thrownAt) { o.thrownAt.t -= dt; if (o.thrownAt.t <= 0) o.thrownAt = null; }
+      const b = o.body;
+      const v = b.speed();
+      if (o.thrownAt?.by === 'stick') {
+        // his throws aim at your cursor and your apps
+        if (fighting && dist(b.x, b.y, this.pointer.x, this.pointer.y) < 36 + (b.radius || 0) * 0.5) {
+          o.hitCd = 0.5;
+          this.hitCursor(o.kind === 'file' ? 10 : 8, this.pointer.x, this.pointer.y, true);
+          if (o.kind === 'file') o.shatter(this);
+          o.thrownAt = null;
+          b.vx *= -0.3; b.vy = -200;
+          continue;
+        }
+        for (const a of this.apps) {
+          if (!a.alive || a.possessed > 0) continue;
+          if (a.contains(b.x, b.y)) { a.hurt(8, b.vx * 0.5, b.vy * 0.5 - 200); o.hitCd = 0.5; o.thrownAt = null; break; }
+        }
+        if (o.kind === 'file' && b.ground && o.thrownAt === null) o.damage(this, 3);
+        continue;
+      }
+      if (v < (o.kind === 'textblock' ? 120 : 330) || s.st.devoured > 0) continue;
+      const sd = s.distTo(b.x, b.y);
+      let hitD = sd;
+      if (o.kind === 'drawn' || o.kind === 'textblock' || o.kind === 'popup') {
+        hitD = Infinity;
+        for (const p of b.worldPts()) hitD = Math.min(hitD, s.distTo(p.x, p.y));
+      } else hitD = sd - (b.radius || 10);
+      if (hitD > 10) continue;
+      o.hitCd = 0.45;
+      const mass = clamp(b.m / 6, 0.5, 3);
+      let dmg = fighting ? clamp((v / 90) * mass, 4, 28) : 0;
+      if (o.kind === 'textblock') dmg = Math.min(dmg, 7);
+      const kx = b.vx * 0.7, ky = b.vy * 0.5 - 250;
+      if (fighting) s.hurt(dmg, kx, ky, { obj: o });
+      else if (v > 600) { s.knock(kx, ky); this.stats.anger = clamp(this.stats.anger + 6, 0, 100); }
+      if (o.kind === 'drawn') {
+        if (o.material === 'fire') { s.st.burn = 3; this.fx.embers(b.x, b.y, 12); if (fighting) s.hurt(4, 0, 0, { invuln: 0 }); }
+        if (o.material === 'ice') { s.st.frozen = 1.6; this.fx.frost(b.x, b.y, 14); }
+        if (o.material === 'bouncy') { b.vx *= -0.8; b.vy = -Math.abs(b.vy) * 0.8; }
+      }
+      if (o.kind === 'textblock') this.fx.dust(b.x, b.y, 6);
+    }
+
+    // burning damage
+    if (fighting && s.st.burn > 0) s.hp = Math.max(0, s.hp - dt * 2.5);
+    if (fighting && s.hp <= 0 && this.mode === 'fight') this.endFight('user');
+
+    // projectiles
+    for (const p of this.projectiles) {
+      if (p.dead) continue;
+      if (p.owner === 'stick') {
+        if (dist(p.x, p.y, this.pointer.x, this.pointer.y) < 24 + p.r) {
+          p.dead = true;
+          this.hitCursor(p.dmg, p.x, p.y, true);
+          this.fx.sparks(p.x, p.y, '#ff8a1f', 14);
+          continue;
+        }
+        for (const a of this.apps) {
+          if (a.alive && a.possessed <= 0 && a.contains(p.x, p.y)) { p.dead = true; a.hurt(p.dmg, p.vx * 0.5, p.vy * 0.5); break; }
+        }
+        if (!p.dead && p.aim && (dist(p.x, p.y, p.aim.x, p.aim.y) < 16 || p.life < 0.05)) {
+          // the shot hits the "screen" where you were
+          p.dead = true;
+          this.fx.sparks(p.x, p.y, '#ff8a1f', 12);
+          this.hitCursor(p.dmg * 0.5, p.x, p.y);
+        }
+      } else if (s.st.devoured <= 0 && s.distTo(p.x, p.y) < p.r) {
+        p.dead = true;
+        s.hurt(p.dmg, p.vx * 0.4, p.vy * 0.4 - 150);
+      }
+    }
+  }
+
+  onMessage(data) {
+    this.wake();
+    if (!data || typeof data !== 'object') return;
+    if (data.cmd === 'fight') this.startFight();
+    else if (data.cmd === 'feed') this.feed();
+    else if (data.cmd === 'summon') this.summonApp(data.kind || null);
+    else if (data.cmd === 'pause') { this.paused = true; this.gx.clearRect(0, 0, this.canvas.width, this.canvas.height); }
+    else if (data.cmd === 'resume') this.paused = false;
+    else if (data.cmd === 'say' && data.text) this.say(this.stick, String(data.text).slice(0, 200), { force: true });
+  }
+
+  // ---------------------------------------------------------------- loop
+  frame(rawDt) {
+    if (this.hidden || this.paused || this.dormant) return;
+    let dt = Math.min(rawDt, 1 / 20);
+    if (this.warpT > 0) { this.warpT -= dt; if (this.warpT <= 0) this.timeScale = 1; }
+    const sdt = dt * this.timeScale;
+    this.t += sdt;
+
+    for (const tm of this.timers) tm.t -= dt;
+    const due = this.timers.filter((t) => t.t <= 0);
+    this.timers = this.timers.filter((t) => t.t > 0);
+    for (const tm of due) { try { tm.fn(); } catch (e) { this.ctx.log('timer error', String(e?.stack || e)); } }
+
+    this.rebuildPlatforms();
+    if (this.mode === 'fight') {
+      const sc = this.stick.center;
+      const ranked = this.apps.filter((a) => a.alive && a.possessed <= 0)
+        .sort((a, b) => dist(a.center.x, a.center.y, sc.x, sc.y) - dist(b.center.x, b.center.y, sc.x, sc.y));
+      this.engaged = new Set(ranked.slice(0, 3));
+    }
+    this.brain.update(sdt);
+    this.stick.update(sdt);
+    for (const a of this.apps) { a.saying = Math.max(0, (a.saying || 0) - sdt); a.update(sdt); a.postUpdate(sdt); }
+    for (const o of this.objects) {
+      o.update(sdt, this);
+      if (o.life !== undefined && o.life !== Infinity && o.kind === 'file' && !o.broken) {
+        o.life -= sdt;
+        if (o.life <= 0) { o.dead = true; this.fx.burst(o.body.x, o.body.y, { count: 8, color: '#bde0fe', speed: 100, life: 0.5, size: 3, gravity: 0 }); }
+      }
+    }
+    for (const p of this.projectiles) p.update(sdt, this);
+    this.combat(sdt);
+    this.objects = this.objects.filter((o) => !o.dead);
+    this.projectiles = this.projectiles.filter((p) => !p.dead);
+    this.apps = this.apps.filter((a) => !a.dead);
+    this.sketches = this.sketches.filter((k) => !k.done);
+    this.fx.update(sdt);
+    if (this.mode === 'fight') {
+      this.fightT += dt;
+      this.ink = Math.min(this.maxInk, this.ink + dt * 9);
+    }
+    this.arena?.update(dt);
+    this.hit.sync();
+    // the game layer is a full-screen canvas: repaint less often when little is going on
+    this.renderAcc = (this.renderAcc || 0) + dt;
+    const calm = this.mode === 'chill' && !this.hit.drag && this.fx.parts.length < 20;
+    const fps = !calm ? 60 : this.stick.action?.name === 'sleep' ? 10 : 24;
+    if (this.renderAcc >= 1 / fps - 0.002) {
+      this.renderAcc = 0;
+      // every repaint makes the host recomposite the whole transparent screen, so skip
+      // frames where nothing visible moved (he's standing still, sitting, asleep…)
+      const sig = calm ? this.signature() : null;
+      if (!sig || sig !== this.lastSig) { this.lastSig = sig; this.render(); }
+    }
+    if (this.canDoze()) this.doze();
+  }
+
+  signature() {
+    const r = (v) => Math.round(v / 2); // 2px: ignore sub-pixel breathing
+    const J = this.stick.J;
+    let sig = J ? ['head', 'hip', 'h1', 'h2', 'f1', 'f2', 'k1', 'k2'].map((k) => r(J[k][0]) + ',' + r(J[k][1])).join(';') : 'x';
+    for (const a of this.apps) {
+      const c = a.center;
+      sig += `|${r(c.x)},${r(c.y)},${a.goal || a.mode !== 'ground' || a.st.dance > 0 ? Math.round(a.t * 30) : 0},${a.down > 0}`;
+    }
+    for (const o of this.objects) {
+      if (!o.body) continue;
+      sig += `|${r(o.body.x)},${r(o.body.y)},${Math.round(o.body.a * 20)}`;
+      if (o.material === 'fire' || o.material === 'ice' || o.kind === 'bomb') sig += Math.round(this.t * 30);
+      if (o.life !== undefined && o.life < 1) sig += Math.round(o.life * 20);
+    }
+    // anything animated by the effects layer forces a repaint
+    const fx = this.fx;
+    if (fx.parts.length || fx.bolts.length || fx.beams.length || fx.rings.length || fx.texts.length || fx.shakeAmp || fx.flashA || fx.glitchT ||
+        this.projectiles.length || this.sketches.length || fx.cracks.some((c) => c.healing)) sig += '|fx' + Math.round(this.t * 60);
+    return sig + '|' + fx.cracks.length;
+  }
+
+  render() {
+    const gx = this.gx;
+    const { w, h } = this.size;
+    gx.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
+    gx.clearRect(0, 0, w, h);
+    const [ox, oy] = this.fx.shakeOffset();
+    gx.save();
+    gx.translate(ox, oy);
+    this.fx.drawBack(gx);
+    if (this.mode === 'fight' || this.mode === 'ending') this.arena?.drawBack(gx);
+    for (const o of this.objects) if (o.kind === 'file') o.draw(gx, this);
+    for (const o of this.objects) if (o.kind !== 'file' && o.kind !== 'popup') o.draw(gx, this);
+    for (const a of this.apps) a.draw(gx);
+    for (const k of this.sketches) {
+      const n = Math.max(2, Math.ceil(k.pts.length * k.k));
+      drawInk(gx, k.pts.slice(0, n), k.material);
+    }
+    this.stick.draw(gx);
+    if (this.dormant && this.stick.J) {
+      const [hx, hy] = this.stick.J.head;
+      gx.save();
+      gx.fillStyle = 'rgba(255,255,255,0.85)';
+      gx.font = 'bold 11px system-ui, sans-serif'; gx.fillText('z', hx + 10, hy - 12);
+      gx.font = 'bold 14px system-ui, sans-serif'; gx.fillText('z', hx + 17, hy - 24);
+      gx.font = 'bold 17px system-ui, sans-serif'; gx.fillText('Z', hx + 26, hy - 39);
+      gx.restore();
+    }
+    if (this.stick.weapon) this.stick.weapon.draw(gx);
+    for (const p of this.projectiles) p.draw(gx);
+    this.fx.drawFront(gx);
+    for (const o of this.objects) if (o.kind === 'popup') o.draw(gx, this);
+    this.arena?.drawFront(gx);
+    gx.restore();
+    this.fx.drawScreen(gx, w, h);
+  }
+}
+
+export { Projectile, TAU };
