@@ -22,14 +22,26 @@ steals your drawings, draws his own swords, fires energy blasts at your cursor, 
   When the fight ends, everything is restored.
 - Apps that aren't installed still show up, using built-in original icon art.
 
-## Install
+## Run it
+
+**Standalone** (Linux with Python 3, GTK 3 and WebKit2GTK 4.1):
+
+```sh
+./run.sh          # ./run.sh stop to stop him
+```
+
+**Inside [WidgetSystem](https://github.com/NGdev2/WidgetSystem)**: install it from the Navigator
+(✦ → Navigator…), or register a local checkout:
 
 ```sh
 widgetctl path add ~/Documents/Profession/projects/DeskSprite
 widgetctl add desksprite
 ```
 
-Saving any file hot-reloads it.
+Saving any file hot-reloads it. `solo/` is the bundled runner (made by `widgetctl export-solo`).
+
+When a widget goes full screen, he lives behind it, and sometimes tears his way through to the
+front. WidgetSystem's repair daemon **fsck** patches the hole and collects the paper scraps.
 
 ## Playing
 

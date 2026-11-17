@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>WidgetSystem</title>
+  <link rel="stylesheet" href="/shell/shell.css">
+</head>
+<body>
+  <!-- stacking: frames 1 · back layer 3 · expanded "sheet" 4 · tear rims 5 · front layer 6 · effects 7-8 · UI 10 -->
+  <div id="ws-desk"></div>              <!-- widget frames (not a stacking context, so the sheet can rise above the back layer) -->
+  <div id="ws-overlay"></div>           <!-- back layer: free-roaming elements (creatures) -->
+  <canvas id="ws-particles-back"></canvas>
+  <div id="ws-bubbles-back"></div>
+  <div id="ws-rims"></div>              <!-- rims of holes torn into the sheet -->
+  <div id="ws-overlay-front"></div>     <!-- front layer: creatures in front of the sheet -->
+  <canvas id="ws-particles"></canvas>
+  <div id="ws-bubbles"></div>
+  <div id="ws-ui"></div>            <!-- menus, gallery, dialogs, toolbar, launcher -->
+  <script type="module" src="/shell/runtime.js"></script>
+</body>
+</html>

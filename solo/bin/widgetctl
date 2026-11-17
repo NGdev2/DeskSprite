@@ -1,0 +1,215 @@
+#!/usr/bin/env python3
+"""Control a running WidgetSystem.
+
+  widgetctl start                 start WidgetSystem in the background
+  widgetctl quit                  stop it
+  widgetctl list                  available widgets and placed instances
+  widgetctl add <widget> [json]   add an instance (json = initial settings)
+  widgetctl remove <instance>     remove an instance
+  widgetctl send <target> <json>  message an instance id, a widget id, or '*'
+  widgetctl edit                  toggle edit mode
+  widgetctl gallery               open the add-widget gallery
+  widgetctl toggle                hide/show all widgets
+  widgetctl theme <id>            switch theme (night-cron, glass)
+  widgetctl reload                reload the whole shell
+  widgetctl devtools              open the WebKit inspector
+  widgetctl snapshot [file.png]   render the widget layer to a PNG
+  widgetctl eval '<js>'           run JavaScript in the shell page, print the result (testing)
+  widgetctl path add|remove <dir> register a folder that contains widgets
+  widgetctl browse [--refresh]    list the widget index with installed state (Navigator)
+  widgetctl install <id> [--yes]  clone a widget from the index into your widgets folder
+  widgetctl update <id>           git pull an installed widget (fast-forward only)
+  widgetctl uninstall <id>        remove an installed widget (dev folders are only unregistered)
+  widgetctl navigator             open the Navigator panel
+  widgetctl export-solo <dir>     bundle a standalone runner (solo/ + run.sh) into a widget folder
+  widgetctl url                   print the dev URL (open in a normal browser)
+  widgetctl log [-n N] [-f]       print the last N log lines (default 50); -f follows
+"""
+import json
+import os
+import subprocess
+import sys
+import urllib.request
+from pathlib import Path
+
+REPO = Path(__file__).resolve().parent.parent
+RUNTIME = Path(os.environ.get("XDG_RUNTIME_DIR", "/tmp")) / (os.environ.get("WIDGETSYSTEM_INSTANCE", "widgetsystem") + ".json")
+LOG = Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local/share")) / "widgetsystem/widgetsystem.log"
+
+
+def info():
+    try:
+        return json.loads(RUNTIME.read_text())
+    except (OSError, ValueError):
+        sys.exit("WidgetSystem is not running (widgetctl start)")
+
+
+def call(method, params=None, timeout=10):
+    i = info()
+    req = urllib.request.Request(f"http://127.0.0.1:{i['port']}/api/{method}", data=json.dumps(params or {}).encode(),
+                                 headers={"X-WS-Token": i["token"], "Content-Type": "application/json"})
+    try:
+        res = json.loads(urllib.request.urlopen(req, timeout=timeout).read())
+    except OSError as e:
+        sys.exit(f"cannot reach WidgetSystem: {e}")
+    if not res["ok"]:
+        sys.exit(res["error"])
+    return res["result"]
+
+
+# ---------------------------------------------------------------- Navigator (widgetsystem/navigator.py)
+DANGEROUS = ("shell", "network")
+
+
+def _ask(prompt):
+    try:
+        return input(prompt).strip().lower()
+    except EOFError:
+        return ""
+
+
+def nav_browse(refresh):
+    r = call("ctl.nav.index", {"refresh": refresh, "checkUpdates": True}, timeout=60)
+    when = {"remote": "online", "cache": "cached", "local": "local copy"}.get(r["source"], r["source"])
+    print(f"Widget index ({when}){': ' + r['error'] if r.get('error') else ''}")
+    for w in r["widgets"]:
+        if w["installed"]:
+            state = {"builtin": "built-in", "user": "installed", "dev": "dev folder"}[w["source"]]
+            if w.get("updateAvailable"):
+                state += ", update available"
+        else:
+            state = "coming soon" if w["private"] else "-"
+        perms = f"  [{', '.join(w['permissions'])}]" if w.get("permissions") else ""
+        local = "" if w["inIndex"] or w.get("source") == "builtin" else "  (not in index)"
+        print(f"  {w['id']:<16} {w['name']:<18} {state:<28}{perms}{local}")
+        if w.get("version") and w.get("path"):
+            print(f"  {'':<16} v{w['version']}  {w['path']}")
+
+
+def nav_change(cmd, wid, yes):
+    op = {"install": "install", "update": "update", "uninstall": "remove"}[cmd]
+    params = {"id": wid}
+    if op == "install":
+        entry = next((w for w in call("ctl.nav.index", timeout=60)["widgets"] if w["id"] == wid), None)
+        perms = [p for p in (entry or {}).get("permissions", []) if p in DANGEROUS]
+        if perms:
+            print(f"{wid} asks for these permissions: {', '.join(perms)}")
+            print("  shell   = run any command on your computer;  network = fetch any URL")
+            if not yes and _ask("Install it anyway? [y/N] ") not in ("y", "yes"):
+                sys.exit("cancelled")
+            params["acceptPermissions"] = perms
+        if entry and not entry.get("private") and not entry.get("installed"):
+            print(f"cloning {wid}...", flush=True)
+    r = call(f"ctl.nav.{op}", params, timeout=300)
+    if op == "install":
+        print(f"installed {wid} -> {r['path']}")
+        adds = [f"{wid}:{v}" for v in r.get("variants") or []] or [wid]
+        print("add it with: " + "  |  ".join(f"widgetctl add {a}" for a in adds))
+    elif op == "update":
+        print(f"updated {wid} {r['from']} -> {r['to']}" if r["updated"] else f"{wid} is already up to date ({r['to']})")
+    else:
+        what = {"deleted": "deleted", "unlinked": "removed the link", "unregistered": "unregistered dev folder"}[r["kind"]]
+        print(f"{what} {r['path']}; removed: {', '.join(r['removed']) or wid}")
+
+
+RUN_SH = """#!/bin/sh
+# Run this widget standalone: no WidgetSystem install needed (Linux, Python 3 + GTK3 + WebKit2GTK 4.1).
+#   ./run.sh          start it (it sits on your desktop, below your windows)
+#   ./run.sh stop     stop it
+#   ./run.sh theme glass|night-cron
+# Generated by `widgetctl export-solo`; the runner in solo/ is a copy of WidgetSystem.
+cd "$(dirname "$0")" || exit 1
+ID=$(python3 -c 'import json; print(json.load(open("widget.json"))["id"])')
+CTL="env WIDGETSYSTEM_INSTANCE=solo-$ID python3 solo/bin/widgetctl"
+case "${1:-start}" in
+  start) PYTHONPATH="$PWD/solo" setsid python3 -m widgetsystem --solo "$PWD" >/dev/null 2>&1 &
+         echo "started $ID (./run.sh stop to stop it)" ;;
+  stop)  $CTL quit && echo "stopped $ID" ;;
+  *)     $CTL "$@" ;;
+esac
+"""
+
+
+def export_solo(target):
+    """Copy the runner (Python core, shell, themes, widgetctl) into <widget>/solo and write run.sh."""
+    import shutil
+    if not (target / "widget.json").is_file():
+        sys.exit(f"{target} has no widget.json")
+    solo = target / "solo"
+    if solo.exists():
+        shutil.rmtree(solo)
+    ignore = shutil.ignore_patterns("__pycache__", "*.pyc")
+    for part in ("widgetsystem", "shell", "themes"):
+        shutil.copytree(REPO / part, solo / part, ignore=ignore)
+    (solo / "bin").mkdir()
+    shutil.copy2(REPO / "bin" / "widgetctl", solo / "bin" / "widgetctl")
+    shutil.copy2(REPO / "LICENSE", solo / "LICENSE") if (REPO / "LICENSE").exists() else None
+    rev = subprocess.run(["git", "-C", str(REPO), "rev-parse", "--short", "HEAD"], capture_output=True, text=True).stdout.strip()
+    (solo / "VERSION").write_text(f"WidgetSystem {rev or 'unknown'}\n")
+    (solo / "README.md").write_text("A bundled copy of [WidgetSystem](https://github.com/NGdev2/WidgetSystem) so this widget\n"
+                                    "runs standalone (`./run.sh`). Regenerate with `widgetctl export-solo <widget dir>`.\n")
+    run = target / "run.sh"
+    run.write_text(RUN_SH)
+    run.chmod(0o755)
+    print(f"exported runner {rev} to {solo} and wrote {run}")
+
+
+def main(argv):
+    if not argv or argv[0] in ("-h", "--help", "help"):
+        print(__doc__.strip())
+        return
+    cmd, rest = argv[0], argv[1:]
+    if cmd == "export-solo":
+        return export_solo(Path(rest[0]).expanduser().resolve())
+    if cmd == "start":
+        subprocess.Popen([sys.executable, "-m", "widgetsystem", *rest], cwd=REPO, start_new_session=True,
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        print("started")
+    elif cmd == "url":
+        i = info()
+        print(f"http://127.0.0.1:{i['port']}/?token={i['token']}")
+    elif cmd == "log":
+        n = rest[rest.index("-n") + 1] if "-n" in rest else "50"
+        os.execvp("tail", ["tail", "-n", n, *(["-f"] if "-f" in rest else []), str(LOG)])
+    elif cmd == "list":
+        r = call("ctl.list")
+        print("Widgets:")
+        for w in r["widgets"]:
+            print(f"  {w['id']:<16} {w['name']:<18} {w['_dir']}")
+        print("Instances:")
+        for inst in r["instances"]:
+            print(f"  {inst['id']:<16} {inst['widget']:<16} at {inst['x']},{inst['y']} {inst['w']}x{inst['h']}")
+        for p, e in r["errors"].items():
+            print(f"  ! {p}: {e}")
+    elif cmd == "add":
+        call("ctl.add", {"widget": rest[0], "settings": json.loads(rest[1]) if len(rest) > 1 else {}})
+    elif cmd == "remove":
+        call("ctl.remove", {"id": rest[0]})
+    elif cmd == "send":
+        try:
+            data = json.loads(rest[1])
+        except ValueError:
+            data = rest[1]
+        call("ctl.send", {"target": rest[0], "data": data})
+    elif cmd == "snapshot":
+        print(call("ctl.snapshot", {"path": os.path.abspath(rest[0]) if rest else None}))
+    elif cmd == "theme":
+        print(call("ctl.theme", {"id": rest[0]}))
+    elif cmd == "eval":
+        print(call("ctl.eval", {"js": rest[0]}))
+    elif cmd == "path":
+        print(json.dumps(call(f"ctl.path.{rest[0]}", {"path": rest[1]}), indent=2))
+    elif cmd == "browse":
+        nav_browse("--refresh" in rest)
+    elif cmd in ("install", "update", "uninstall"):
+        if not rest or rest[0].startswith("-"):
+            sys.exit(f"usage: widgetctl {cmd} <id>")
+        nav_change(cmd, rest[0], "--yes" in rest or "-y" in rest)
+    elif cmd in ("edit", "gallery", "toggle", "reload", "devtools", "quit", "navigator"):
+        call(f"ctl.{cmd}")
+    else:
+        sys.exit(f"unknown command {cmd!r}; see widgetctl --help")
+
+
+if __name__ == "__main__":
+    main(sys.argv[1:])
