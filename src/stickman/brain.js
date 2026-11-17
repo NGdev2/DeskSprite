@@ -7,6 +7,7 @@ import { line } from '../actors/lore.js';
 import { Drawn, shapePoints, Projectile, Popup, Ball } from '../world/objects.js';
 import { makeItem } from '../world/sketch.js';
 import { installTricks } from './tricks.js';
+import { installLayers } from './layers.js';
 import { GRAVITY } from '../world/physics.js';
 import { clamp, rand, pick, chance, weighted, sign, dist } from '../util.js';
 import { APPS } from '../actors/lore.js';
@@ -133,7 +134,11 @@ export class Brain {
       { w: apps.length ? 2.5 : 0, f: () => this.actRide() },
       { w: N.food < 30 ? 6 : 0, f: () => this.actComplain('hungry') },
       { w: N.fun < 25 ? 5 : 0, f: () => this.actComplain('bored') },
-      { w: g.settings.surpriseFights ? (N.anger > 60 ? 30 : 0.5 * mis) : 0, f: () => this.actChallenge() },
+      { w: g.settings.surpriseFights && !g.sheet ? (N.anger > 60 ? 30 : 0.5 * mis) : 0, f: () => this.actChallenge() },
+      // layers: tear through a full-screen widget, sit in the hole, go back
+      { w: g.tearWeight(mis), f: () => this.actTearIn() },
+      { w: s.layer === 'front' && g.ledgePlatforms().length ? 6 : 0, f: () => this.actSitInHole() },
+      { w: s.layer === 'front' ? 2 + g.frontTime() / 15 : 0, f: () => this.actReturnBack() },
     ];
     const o = weighted(opts);
     if (o) o.f();
@@ -877,3 +882,4 @@ export class Brain {
 
 
 installTricks(Brain);
+installLayers(Brain);

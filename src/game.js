@@ -55,6 +55,12 @@ export class Game {
     this.stats.bonds = this.stats.bonds || {};
     this.settings = ctx.settings;
     this.sound.on = !!this.settings.sound;
+    // layers: the full-screen "sheet", holes he tore, paper scraps on the floor
+    this.sheet = null;
+    this.sheetSince = 0;
+    this.frontSince = 0;
+    this.myTears = new Set();
+    this.scraps = [];
     this.resize();
   }
 
@@ -70,6 +76,12 @@ export class Game {
     this.canvas.className = 'ds-canvas';
     this.layer.append(this.canvas);
     this.gx = this.canvas.getContext('2d');
+    // a second canvas in front of an expanded widget, used while he's on the front side
+    this.layerFront = ctx.overlay.create({ className: 'ds-layer', layer: 'front' });
+    this.canvasFront = document.createElement('canvas');
+    this.canvasFront.className = 'ds-canvas';
+    this.layerFront.append(this.canvasFront);
+    this.gxFront = this.canvasFront.getContext('2d');
     this.fitCanvas();
     this.hit = new Hitboxes(this);
     this.refreshWidgets();
@@ -77,7 +89,17 @@ export class Game {
 
     const nest = this.nestRect();
     this.stick = new Stickman(this, nest ? nest.x + nest.w / 2 : this.w / 2, nest ? nest.y - 200 : 100);
+    this.stick.layer = 'back';
     this.brain = new Brain(this, this.stick);
+
+    this.sheet = ctx.desktop.sheet?.() || null;
+    ctx.on('sheet', (sheet) => {
+      if (sheet && !this.sheet) this.sheetSince = performance.now();
+      this.sheet = sheet;
+      if (!sheet && this.stick.layer === 'front') this.setStickLayer('back');  // the panel closed: drop onto the desktop
+      this.wake();
+    });
+    ctx.on('ticket', ({ type, ticket }) => this.onTicket(type, ticket));
 
     ctx.on('layout', () => { this.refreshWidgets(); this.wake(); }); // his bed may have moved
     ctx.on('resize', () => this.refreshWidgets());
@@ -181,12 +203,15 @@ export class Game {
     const { w, h } = this.size;
     const dpr = Math.min(2, window.devicePixelRatio || 1);
     this.dpr = dpr;
-    this.layer.style.width = w + 'px';
-    this.layer.style.height = h + 'px';
-    this.canvas.width = Math.round(w * dpr);
-    this.canvas.height = Math.round(h * dpr);
-    this.canvas.style.width = w + 'px';
-    this.canvas.style.height = h + 'px';
+    for (const [layer, canvas] of [[this.layer, this.canvas], [this.layerFront, this.canvasFront]]) {
+      if (!layer) continue;
+      layer.style.width = w + 'px';
+      layer.style.height = h + 'px';
+      canvas.width = Math.round(w * dpr);
+      canvas.height = Math.round(h * dpr);
+      canvas.style.width = w + 'px';
+      canvas.style.height = h + 'px';
+    }
   }
 
   refreshWidgets() {
@@ -205,7 +230,12 @@ export class Game {
     const { w, h } = this.size;
     this.floor = { x1: 0, x2: w, y: h - 2, key: 'floor', kind: 'floor' };
     P.push(this.floor);
-    for (const wd of this.widgetRects) {
+    // the bottom edges of holes in the sheet: seats for whoever is in front of it
+    for (const t of this.sheet?.tears || []) {
+      if (t.ledge?.w > 24) P.push({ x1: t.ledge.x + 4, x2: t.ledge.x + t.ledge.w - 4, y: t.ledge.y, key: 't:' + t.id, kind: 'ledge' });
+    }
+    const front = this.stick?.layer === 'front';
+    for (const wd of front ? [] : this.widgetRects) {   // in front of the sheet the widgets behind it are out of reach
       const r = wd.rect;
       if (r.w < 30 || r.y < 110 * (this.settings.scale || 1)) continue; // no room to stand above it
       P.push({ x1: r.x + 4, x2: r.x + r.w - 4, y: r.y, key: 'w:' + wd.id, kind: 'widget', mine: wd.id === this.ctx.id });
@@ -231,6 +261,75 @@ export class Game {
   }
 
   platformByKey(k) { return this.platMap.get(k) || null; }
+  ledgePlatforms() { return this.platforms.filter((p) => p.kind === 'ledge'); }
+
+  // ---------------------------------------------------------------- layers & tears
+  setStickLayer(layer) {
+    const s = this.stick;
+    if (s.layer === layer) return;
+    s.layer = layer;
+    this.frontSince = layer === 'front' ? performance.now() : 0;
+    this.hit.map.get(s)?.setLayer?.(layer);           // his hitbox, and so his speech bubbles, follow him
+    this.rebuildPlatforms();
+    if (layer === 'back' && s.plat?.kind === 'ledge') { s.mode = 'air'; s.vy = 0; }
+    this.lastSig = null;
+  }
+  canTear() {
+    const sheet = this.sheet, s = this.stick;
+    const pref = this.settings.tear || 'sometimes';
+    if (!sheet || !sheet.tearable || pref === 'never' || this.mode !== 'chill' || s.layer !== 'back') return false;
+    if (sheet.tears.length >= (sheet.maxTears || 3) || performance.now() - (this.lastSealed || 0) < 120000) return false;
+    return pref !== 'stuck' || this.sheetAge() > 90;
+  }
+  tearWeight(mis) {
+    if (!this.canTear()) return 0;
+    const pref = { stuck: 6, sometimes: 3, often: 8 }[this.settings.tear || 'sometimes'] || 3;
+    return pref * mis + (this.sheetAge() > 90 ? 6 : 0);
+  }
+  sheetAge() { return this.sheet ? (performance.now() - this.sheetSince) / 1000 : 0; }
+  frontTime() { return this.frontSince ? (performance.now() - this.frontSince) / 1000 : 0; }
+  // Paper scraps fall out of a fresh hole; each is an "orphan" ticket fsck can collect.
+  dropScraps(x, y, tearId) {
+    const n = 3 + Math.floor(Math.random() * 3);
+    for (let i = 0; i < n; i++) {
+      const sx = clamp(x + (Math.random() - 0.5) * 140, 10, this.w - 10);
+      const r = this.ctx.desktop.tickets.file({ kind: 'orphan', x: sx, y: this.h - 4, label: 'paper scrap', layer: 'front', ttl: 240000 });
+      this.scraps.push({ id: r.id || null, x: sx, y: this.h - 4, a: Math.random() * Math.PI, s: 6 + Math.random() * 5, tear: tearId });
+    }
+    this.lastSig = null;
+  }
+  onTicket(type, t) {
+    if (t.kind === 'tear') {
+      this.sheet = this.ctx.desktop.sheet?.() || this.sheet;
+      this.rebuildPlatforms();
+      if ((type === 'resolve' || type === 'expire') && this.myTears.delete(t.id)) {
+        this.lastSealed = performance.now();
+        if (type === 'resolve' && t.by !== this.ctx.id && Math.random() < 0.6) this.say(this.stick, pick(['Aww, my door!', 'Hey, I was using that!', 'Fine, fsck. FINE.']));
+      }
+      // window shoppers: an app behind the panel comments on a fresh hole
+      if (type === 'open') {
+        const app = pick(this.apps.filter((a) => a.alive));
+        if (app && Math.random() < 0.7) this.after(1600, () => this.say(app, pick(['Someone opened a new tab in the WALL.', '$ ls ./hole → nothing. Classic.', 'Is that… daylight?', 'fsck is going to be so mad.'])));
+      }
+    } else if (t.kind === 'orphan' && (type === 'resolve' || type === 'expire')) {
+      const before = this.scraps.length;
+      this.scraps = this.scraps.filter((s) => s.id !== t.id);
+      if (this.scraps.length !== before) this.lastSig = null;
+    }
+    this.wake();
+  }
+  drawScraps(gx) {
+    for (const p of this.scraps) {
+      gx.save();
+      gx.translate(p.x, p.y);
+      gx.rotate(p.a);
+      gx.fillStyle = 'rgba(240,236,228,0.95)';
+      gx.strokeStyle = 'rgba(0,0,0,0.25)';
+      gx.beginPath(); gx.moveTo(-p.s, 0); gx.lineTo(p.s * 0.6, -p.s * 0.5); gx.lineTo(p.s, p.s * 0.4); gx.closePath();
+      gx.fill(); gx.stroke();
+      gx.restore();
+    }
+  }
   widgetPlatforms() { return this.platforms.filter((p) => p.kind === 'widget' && p.x2 - p.x1 > 40); }
   platformUnderPoint(x, y) { return platformUnder(this.platforms, clamp(x, 1, this.w - 1), y, 0) || this.floor; }
 
@@ -736,7 +835,7 @@ export class Game {
     const fx = this.fx;
     if (fx.parts.length || fx.bolts.length || fx.beams.length || fx.rings.length || fx.texts.length || fx.shakeAmp || fx.flashA || fx.glitchT ||
         this.projectiles.length || this.sketches.length || fx.cracks.some((c) => c.healing)) sig += '|fx' + Math.round(this.t * 60);
-    return sig + '|' + fx.cracks.length;
+    return sig + '|' + fx.cracks.length + '|' + this.stick.layer + this.scraps.length;
   }
 
   render() {
@@ -756,9 +855,9 @@ export class Game {
       const n = Math.max(2, Math.ceil(k.pts.length * k.k));
       drawInk(gx, k.pts.slice(0, n), k.material);
     }
-    this.brain.act?.draw?.(gx);
-    this.stick.draw(gx);
-    if (this.dormant && this.stick.J) {
+    const front = this.stick.layer === 'front';
+    if (!front) { this.brain.act?.draw?.(gx); this.stick.draw(gx); }
+    if (this.dormant && this.stick.J && !front) {
       const [hx, hy] = this.stick.J.head;
       gx.save();
       gx.fillStyle = 'rgba(255,255,255,0.85)';
@@ -767,13 +866,36 @@ export class Game {
       gx.font = 'bold 17px system-ui, sans-serif'; gx.fillText('Z', hx + 26, hy - 39);
       gx.restore();
     }
-    if (this.stick.weapon) this.stick.weapon.draw(gx);
+    if (this.stick.weapon && !front) this.stick.weapon.draw(gx);
     for (const p of this.projectiles) p.draw(gx);
     this.fx.drawFront(gx);
     for (const o of this.objects) if (o.kind === 'popup') o.draw(gx, this);
     this.arena?.drawFront(gx);
     gx.restore();
     this.fx.drawScreen(gx, w, h);
+    this.renderFront(front, ox, oy);
+  }
+
+  // The front canvas holds him while he's in front of a sheet, plus fallen paper scraps.
+  renderFront(front, ox, oy) {
+    const gx = this.gxFront;
+    if (!gx) return;
+    const used = front || this.scraps.length > 0;
+    if (!used && !this.frontDirty) return;
+    const { w, h } = this.size;
+    gx.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
+    gx.clearRect(0, 0, w, h);
+    this.frontDirty = used;
+    if (!used) return;
+    gx.save();
+    gx.translate(ox, oy);
+    this.drawScraps(gx);
+    if (front) {
+      this.brain.act?.draw?.(gx);
+      this.stick.draw(gx);
+      if (this.stick.weapon) this.stick.weapon.draw(gx);
+    }
+    gx.restore();
   }
 }
 

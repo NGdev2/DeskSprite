@@ -27,7 +27,7 @@ export class Arena {
     this.cd = { bomb: 0, zap: 0, summon: 0, restore: 0 };
     this.eraserOn = false;
     const ctx = game.ctx;
-    this.el = ctx.overlay.create({ interactive: true, className: 'ds-arena' });
+    this.el = ctx.overlay.create({ interactive: true, className: 'ds-arena', layer: 'front' });   // fights happen in front of everything
     this.el.style.width = game.w + 'px';
     this.el.style.height = game.h + 'px';
     this.el.innerHTML = this.html();
