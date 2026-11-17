@@ -443,6 +443,7 @@ export class Stickman {
       alpha: (flicker ? 0.55 : 1) * this.alpha,
       glitch: this.glitch,
       aura: this.aura || (this.st.burn > 0 ? '#ff5a1f' : null),
+      neon: (g.settings.look || 'auto') === 'auto' ? g.ctx.theme?.name === 'night-cron' : g.settings.look === 'neon',
     });
     if (this.st.frozen > 0) {
       const b = this.bounds();

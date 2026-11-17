@@ -94,17 +94,24 @@ export function draw(g, J, d, dir, opts = {}) {
   }
   const seg = (a, b, c, w) => {
     if (opts.glitch && Math.random() < opts.glitch * 0.5) return;
-    g.strokeStyle = c;
-    g.lineWidth = w;
-    g.beginPath();
     let [ax, ay] = J[a], [bx, by] = J[b];
     if (opts.glitch) {
       const j = opts.glitch * 4;
       ax += (Math.random() - 0.5) * j; bx += (Math.random() - 0.5) * j;
     }
-    g.moveTo(ax, ay);
-    g.lineTo(bx, by);
-    g.stroke();
+    // neon: a tube of three strokes (halo, glow, hot core) instead of a blur filter
+    const passes = opts.neon ? [[w + 7, c, 0.18], [w + 3, c, 0.45], [w * 0.6, '#ffe2c4', 1]] : [[w, c, 1]];
+    const alpha = g.globalAlpha;
+    for (const [pw, pc, pa] of passes) {
+      g.globalAlpha = alpha * pa;
+      g.strokeStyle = pc;
+      g.lineWidth = pw;
+      g.beginPath();
+      g.moveTo(ax, ay);
+      g.lineTo(bx, by);
+      g.stroke();
+    }
+    g.globalAlpha = alpha;
   };
   // back limbs first, darker, for depth
   seg('sh', 'e1', back, d.width); seg('e1', 'h1', back, d.width);
@@ -115,17 +122,27 @@ export function draw(g, J, d, dir, opts = {}) {
   // head
   const [hx, hy] = J.head;
   if (!(opts.glitch && Math.random() < opts.glitch * 0.4)) {
-    g.fillStyle = color;
     g.beginPath();
     g.arc(hx, hy, d.head, 0, TAU);
-    g.fill();
+    if (opts.neon) {   // the head becomes a glowing ring around a dark glass face
+      const alpha = g.globalAlpha;
+      g.fillStyle = 'rgba(20,8,4,0.75)';
+      g.fill();
+      for (const [pw, pc, pa] of [[d.width + 6, color, 0.2], [d.width + 2, color, 0.5], [d.width * 0.6, '#ffe2c4', 1]]) {
+        g.globalAlpha = alpha * pa; g.strokeStyle = pc; g.lineWidth = pw; g.stroke();
+      }
+      g.globalAlpha = alpha;
+    } else {
+      g.fillStyle = color;
+      g.fill();
+    }
   }
   g.shadowBlur = 0;
-  if (opts.face) drawFace(g, J, d, dir, opts.face, opts.lookAt);
+  if (opts.face) drawFace(g, J, d, dir, opts.face, opts.lookAt, opts.neon ? '#ffe2c4' : null);
   g.restore();
 }
 
-function drawFace(g, J, d, dir, face, lookAt) {
+function drawFace(g, J, d, dir, face, lookAt, ink = null) {
   const [hx, hy] = J.head;
   const s = d.head / 8.5;
   let lx = dir * 2.2 * s, ly = -0.5 * s;
@@ -134,8 +151,8 @@ function drawFace(g, J, d, dir, face, lookAt) {
     lx = Math.cos(a) * 2.6 * s;
     ly = Math.sin(a) * 2 * s;
   }
-  g.fillStyle = 'rgba(20,10,0,0.85)';
-  g.strokeStyle = 'rgba(20,10,0,0.85)';
+  g.fillStyle = ink || 'rgba(20,10,0,0.85)';
+  g.strokeStyle = ink || 'rgba(20,10,0,0.85)';
   g.lineWidth = 1.4 * s;
   const ex1 = hx + lx - 2.6 * s, ex2 = hx + lx + 2.6 * s, ey = hy + ly;
   if (face === 'sleep') {

@@ -42,6 +42,17 @@
       "default": "#ff8a1f"
     },
     {
+      "key": "look",
+      "type": "select",
+      "label": "Look",
+      "options": [
+        "auto",
+        "classic",
+        "neon"
+      ],
+      "default": "auto"
+    },
+    {
       "key": "scale",
       "type": "number",
       "label": "Size",
