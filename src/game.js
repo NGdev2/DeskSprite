@@ -778,8 +778,10 @@ export class Game {
     const fighting = this.mode === 'fight';
     // moving objects vs the stickman
     for (const o of this.objects) {
-      if (!o.body || o.dead || o.heldBy === s || o.hitCd > 0) continue;
-      if (o.owner === 'stick' && (o.item || o.life !== Infinity) && !o.thrownAt) continue; // his own toys and doodles don't hurt him
+      if (!o.body || o.dead || o.heldBy === s || o.hitCd > 0 || o.noContact || o.spent) continue;
+      // his own drawings, weapons and leftovers never hurt him (one you grab or deflect becomes yours)
+      if (o.owner === 'stick' && !o.thrownAt) continue;
+      if (this.t - (o.kickedAt ?? -9) < 2.5) continue;   // a file copy he just kicked can't fly back into him
       if (o.thrownAt) { o.thrownAt.t -= dt; if (o.thrownAt.t <= 0) o.thrownAt = null; }
       const b = o.body;
       const v = b.speed();
@@ -1039,7 +1041,8 @@ export class Game {
     this.objects = this.objects.filter((o) => !o.dead);
     this.projectiles = this.projectiles.filter((p) => !p.dead);
     this.apps = this.apps.filter((a) => !a.dead);
-    this.sketches = this.sketches.filter((k) => !k.done);
+    // a sketch lives only as long as the draw action that makes it (a hit can interrupt it)
+    this.sketches = this.sketches.filter((k) => !k.done && (!k.action || this.stick.action === k.action));
     this.fx.update(sdt);
     if (this.mode === 'fight') {
       if (this.fightT <= 100 && this.fightT + dt > 100) this.arena?.toast('⏱ OVERTIME: every hit counts double soon!', 2600);

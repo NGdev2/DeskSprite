@@ -313,6 +313,7 @@ export class Arena {
           g.brain.say(pick(['Hey! Give that back!', 'My sword!']), true);
         } else {
           const b = hit.o.body;
+          if (hit.o.owner === 'stick') hit.o.owner = 'user';   // you grabbed it: now it's your weapon
           if (hit.o.kind === 'file') hit.o.knock(0, 0);
           b.static = false;
           b.held = { x, y, ox: x - b.x, oy: y - b.y };

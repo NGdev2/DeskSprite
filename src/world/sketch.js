@@ -197,6 +197,7 @@ export function makeItem(game, obj, kind, info, owner = 'user') {
     }
     case 'rocket': {
       b.gravityScale = 0;
+      obj.noContact = true;   // it explodes instead
       obj.life = 3.2;
       obj.ai = (dt) => {
         T += dt;
@@ -258,6 +259,7 @@ export function makeItem(game, obj, kind, info, owner = 'user') {
     }
     case 'wave': {
       b.gravityScale = 0;
+      obj.noContact = true;   // it has its own sweep hit
       const t = enemy();
       const dir = t ? sign(t.x - b.x) : 1;
       b.vx = dir * 540; b.vy = 0;
@@ -307,7 +309,7 @@ export function makeItem(game, obj, kind, info, owner = 'user') {
         if (owner === 'user') {
           for (const o of g.objects) {
             if (o.thrownAt?.by === 'stick' && o.body && dist(o.body.x, o.body.y, b.x, b.y) < R + 10) {
-              o.thrownAt = null; o.body.vx *= -0.6; o.body.vy = -300;
+              o.thrownAt = null; o.owner = 'user'; o.body.vx *= -0.6; o.body.vy = -300;
               g.fx.ring(b.x, b.y, R, 'rgba(180,220,255,0.8)', 0.25);
             }
           }

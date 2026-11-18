@@ -343,7 +343,7 @@ export class Brain {
     g.sfx('draw');
     const sketch = { pts, k: 0, material };
     g.sketches.push(sketch);
-    s.play('draw', 1.1, {
+    sketch.action = s.play('draw', 1.1, {
       onUpdate: (A) => { sketch.k = A.k; if (chance(0.3)) g.sfx('draw'); },
       onDone: () => {
         sketch.done = true;
@@ -433,6 +433,7 @@ export class Brain {
         s.play(chance(0.5) ? 'kick' : 'punch', 0.35);
         g.after(120, () => {
           f.knock(s.dir * rand(150, 450), -rand(250, 650));
+          f.kickedAt = g.t;
           g.sfx('pop');
           if (g.settings.mischief === 'chaos' && chance(0.3)) f.damage(g, 2);
         });
@@ -1082,6 +1083,7 @@ export class Brain {
       s.play(chance(0.5) ? 'kick' : 'uppercut', 0.4);
       g.after(150, () => {
         f.knock(s.dir * 300, -500);
+        f.kickedAt = g.t;
         f.damage(g, 2);
         if (f.broken) g.hitDesk(this.dmg(4), b.x, b.y, false, 'smashFile');
       });

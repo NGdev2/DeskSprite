@@ -8,7 +8,7 @@ function sketchProp(brain, pts, dur, material, then) {
   const s = brain.s, g = brain.g;
   const sk = { pts, k: 0, material };
   g.sketches.push(sk);
-  s.play('draw', dur, {
+  sk.action = s.play('draw', dur, {
     onUpdate: (A) => { sk.k = A.k; if (chance(0.3)) g.sfx('draw'); },
     onDone: () => { sk.done = true; then?.(); },
   });
@@ -411,7 +411,7 @@ const tricks = {
       if (d < R && a.possessed <= 0) a.hurt(this.dmg(10 * (1 - d / R) + 3), sign(c.x - x) * 500, -600);
     }
     for (const o of g.objects) {
-      if (o.kind === 'file' && !o.broken && dist(o.body.x, o.body.y, x, y) < 230) { o.knock(sign(o.body.x - x) * 300, -650); o.damage(g, 1); }
+      if (o.kind === 'file' && !o.broken && dist(o.body.x, o.body.y, x, y) < R) { o.knock(sign(o.body.x - x) * 300, -650); o.kickedAt = g.t; o.damage(g, 1); }
     }
     if (dist(g.pointer.x, g.pointer.y, x, y) < R - 10) g.hitDesk(this.dmg(10), x, y - 10, false, 'groundPound');
     else g.fx.crack(x, y - 6, 0.7);
