@@ -145,7 +145,7 @@ export class FX {
     }
     this.parts = this.parts.filter((p) => p.life > 0);
     if (this.parts.length > 900) this.parts.splice(0, this.parts.length - 900);
-    for (const c of this.cracks) if (c.healing) c.a -= dt * 1.5;
+    for (const c of this.cracks) if (c.healing) c.a -= dt * (c.fast ? 6 : 1.5);
     this.cracks = this.cracks.filter((c) => c.a > 0);
     for (const b of this.bolts) b.life -= dt;
     this.bolts = this.bolts.filter((b) => b.life > 0);

@@ -84,7 +84,8 @@ export class Brain {
     this.blastCd -= dt; this.possessCd -= dt; this.popupCd -= dt; this.drawCd -= dt; this.dodgeCd -= dt;
     if (this.g.mode === 'fight') this.fight(dt);
     else this.chill(dt);
-    const floating = this.act?.name === 'meditate' || this.act?.name === 'skate';
+    if (this.levT > 0 && this.g.mode !== 'fight') this.levT = 0;   // a fight-only move: come down when it ends
+    const floating = this.act?.name === 'meditate' || this.act?.name === 'skate' || this.levT > 0;
     if (!floating && s.hover) s.hover = s.hover < 0.5 ? 0 : s.hover * Math.exp(-dt * 6);
     // where to look
     const p = this.g.pointer;

@@ -57,6 +57,8 @@ export class Stickman {
     if (this.J) return { x: (this.J.hip[0] + this.J.neck[0]) / 2, y: (this.J.hip[1] + this.J.neck[1]) / 2 };
     return { x: this.x, y: this.y - this.legLen - this.d.torso / 2 };
   }
+  // height of his feet above the ground he stands on is s.y - hover; `top` is where his feet are
+  get top() { return this.mode === 'ground' ? this.y - this.hover : this.y; }
   get head() { return this.J ? { x: this.J.head[0], y: this.J.head[1] } : { x: this.x, y: this.y - 70 }; }
 
   // ------------------------------------------------------------ commands

@@ -162,7 +162,7 @@ export class Game {
   canDoze() {
     const s = this.stick;
     if (this.mode !== 'chill' || this.hit.drag || this.challenge) return false;
-    if (s.action?.name !== 'sleep' || this.brain.act?.name !== 'sleep' || this.brain.act.t < 3 || !s.onGround) return false;
+    if (s.action?.name !== 'sleep' || this.brain.act?.name !== 'sleep' || this.brain.act.t < 3 || !s.onGround || s.hover > 1) return false;
     const fx = this.fx;
     if (fx.parts.length || fx.bolts.length || fx.beams.length || fx.rings.length || fx.texts.length || fx.shakeAmp || fx.flashA || fx.glitchT) return false;
     if (this.projectiles.length || this.sketches.length || this.timers.length || this.cleanup.active) return false;
@@ -1078,6 +1078,8 @@ export class Game {
     if (this.mode === 'fight') {
       if (this.fightT <= 100 && this.fightT + dt > 100) this.arena?.toast('⏱ OVERTIME: every hit counts double soon!', 2600);
       this.fightT += dt;
+      // how much of the fight he spends above the bottom 200 px (DS-12)
+      if (this.report && this.stick.top < this.h - 200) this.report.highT = (this.report.highT || 0) + dt;
       this.ink = Math.min(this.maxInk, this.ink + dt * 9);
     }
     this.arena?.update(dt);
