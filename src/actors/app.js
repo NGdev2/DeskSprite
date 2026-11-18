@@ -2,11 +2,13 @@
 // fight. The stickman can "possess" one for a while and turn it against you.
 import { Body, rectShape, GRAVITY, landing, platformUnder } from '../world/physics.js';
 import { Projectile, TextBlock } from '../world/objects.js';
-import { APPS, appLine } from './lore.js';
+import { APPS, TIERS, tierOf, appLine } from './lore.js';
 import { artImage, urlImage } from './art.js';
 import { clamp, rand, pick, chance, sign, TAU, nextId, dist } from '../util.js';
 
 const SIZE = 44;
+// Normal-tier damage per hit for each kind of attack; the app's tier multiplies it (TIERS.dmg).
+const DMG = { contact: 6, quarantine: 7, scan: 10, command: 10, devour: 9, spit: 6, shot: 6 };
 
 export class AppActor {
   constructor(game, kind, x, y, info = {}) {
@@ -25,7 +27,7 @@ export class AppActor {
     this.goal = null;
     this.t = rand(10);
     this.phase = 0;
-    this.maxHp = this.L.hp;
+    this.applyTier(tierOf(kind, game.level));
     this.hp = this.maxHp;
     this.down = 0;          // "not responding" timer
     this.possessed = 0;
@@ -37,8 +39,21 @@ export class AppActor {
     this.st = { stun: 0, dance: 0, shieldUp: 0, full: 0 };
     this.spawnT = 0;
     this.dead = false;
-    this.speed = this.L.speed;
     this.hostile = false;
+    this.uses = 0;          // ability uses, for signature moves every few casts
+    this.belly = 0;         // junk Binny has eaten and can spit back
+    this.job = null;        // cleanup target after a fight (Binny)
+  }
+
+  // weak / normal / strong / boss: scales hp, damage, speed and cooldowns
+  applyTier(tier) {
+    const ratio = this.maxHp ? this.hp / this.maxHp : 1;
+    this.tier = tier;
+    this.T = TIERS[tier] || TIERS.normal;
+    this.maxHp = Math.round(this.L.hp * this.T.hp);
+    this.hp = Math.round(this.maxHp * ratio);
+    this.speed = this.L.speed * this.T.speed;
+    this.dmgMul = this.T.dmg * (this.L.pow || 1);
   }
 
   get center() {
@@ -61,6 +76,7 @@ export class AppActor {
     this.body.vx += vx; this.body.vy += vy; this.body.w += w;
     this.body.sleep = 0;
     this.mode = 'tumble';
+    this.tumbleT = 0;
     this.goal = null;
   }
 
@@ -84,9 +100,10 @@ export class AppActor {
     const c = this.center;
     this.g.fx.popText(c.x, c.y - 30, `-${Math.round(dmg)}`, '#ff9aa2', 14);
     this.g.fx.sparks(c.x, c.y, '#fff', 6);
-    if (Math.hypot(vx, vy) > 150 || dmg > 8) this.tumble(vx, vy);
+    const sturdy = this.tier === 'boss' ? 3 : this.tier === 'strong' ? 1.6 : 1;
+    if (Math.hypot(vx, vy) > 150 * sturdy || dmg > 8 * sturdy) this.tumble(vx / sturdy, vy / sturdy);
     if (this.hp <= 0) {
-      this.down = 9;
+      this.down = this.tier === 'weak' ? 12 : 9;
       this.say(appLine(this.kind, 'hurt') + ' (not responding)');
       this.g.fx.burst(c.x, c.y, { count: 8, color: 'rgba(200,200,200,0.8)', type: 'dust', speed: 80, life: 1.2, size: 7, gravity: -60 });
     } else if (chance(0.35)) this.say(appLine(this.kind, 'hurt'));
@@ -128,7 +145,10 @@ export class AppActor {
       const b = this.body;
       const hit = b.step(dt, g.world);
       if (hit > 400) { this.squash = 1; g.fx.dust(b.x, b.y + SIZE / 2, 4); }
-      if (!b.held && b.sleep > 0.25 && this.down <= 0) {
+      this.tumbleT += dt;
+      // rocking on its side against a wall never quite "sleeps": settle anyway after a while
+      const settled = b.sleep > 0.25 || (this.tumbleT > 3 && b.ground && b.speed() < 90);
+      if (!b.held && settled && this.down <= 0) {
         this.mode = 'ground';
         this.x = b.x; this.y = b.ground ? b.ground.y : b.y + SIZE / 2;
         this.platKey = b.ground?.key || null;
@@ -266,6 +286,7 @@ export class AppActor {
         o.dead = true;
         this.st.full = 2;
         this.squash = 1;
+        if (fightOnly) this.belly = Math.min(4, this.belly + 1);
         g.fx.burst(this.x, this.y - 40, { count: 6, color: ['#888', '#bbb'], type: 'debris', speed: 120, life: 0.6, size: 4, gravity: 900 });
         if (chance(0.5)) this.say(pick(['Nom!', 'Recycled!', 'Tasty junk.']));
         return true;
@@ -283,6 +304,13 @@ export class AppActor {
     if (!target) return;
     const dx = target.x - this.x;
     const range = { dash: 60, devour: 40, roll: 50 }[this.L.ability] || 260;
+    const near = !hostile && this.tier === 'weak' && Math.abs(s.center.x - this.x) < 140 && Math.abs(s.y - this.y) < 80;
+    if (near) {
+      // weak apps run from him instead of holding their ground
+      this.walkTo(clamp(this.x - sign(dx) * 220, pl.x1 + 10, pl.x2 - 10));
+      if (chance(dt * 0.8)) this.say(pick(['Eek! Not me!', 'I\'m just a little app!', 'Help, Animator!', 'AAAH!']));
+      return;
+    }
     if (!this.goal || chance(dt)) {
       const want = this.L.ability === 'shield' && !hostile
         ? (g.pointer.x + s.center.x) / 2
@@ -313,12 +341,27 @@ export class AppActor {
   }
 
   useAbility(target, hostile) {
+    const cd0 = this.cd;
+    this.ability(target, hostile);
+    if (this.cd !== cd0) {
+      this.cd *= this.T.cd;
+      if (this.cd >= 0.9) {   // a real cast, not "waiting for a chance"
+        this.uses++;
+        this.g.noteMove?.('ally', this.used || this.L.ability);
+      }
+      this.used = null;
+    }
+  }
+
+  ability(target, hostile) {
     const g = this.g;
     const c = this.center;
     const owner = hostile ? 'stick' : 'ally';
     const d = dist(c.x, c.y, target.x, target.y);
     const shout = () => { if (chance(0.45)) this.say(appLine(this.kind, 'fight')); };
     const s = g.stick;
+    const big = this.tier === 'strong' || this.tier === 'boss';
+    const sig = big && this.uses % 3 === 2;    // every third cast is the signature move
     switch (this.L.ability) {
       case 'dash': {
         if (d > 340) return;
@@ -327,38 +370,80 @@ export class AppActor {
         this.jump(target.x, target.y + 10);
         this.vx = sign(target.x - this.x) * 620;
         this.dashT = 0.6;
+        if (sig && this.kind === 'browser') {
+          // Tab Storm: two more fire dashes right after this one
+          this.used = 'tabStorm';
+          this.dashChain = 2;
+          this.stormT = 3;   // every dash of the storm sets him on fire
+          this.say(pick(['Ctrl+T! Ctrl+T! Ctrl+T!', 'TAB STORM!', 'Opening 3 new tabs… IN YOUR FACE!']));
+          g.fx.popText(c.x, c.y - 40, 'TAB STORM', '#ff8a1f', 18);
+        }
         break;
       }
       case 'roll': {
         if (d > 320) return;
         this.cd = rand(2.5, 4);
         shout();
-        this.tumble(sign(target.x - c.x) * 900, -150, sign(target.x - c.x) * 18);
+        // a target floating overhead gets a rolling leap instead of a floor roll
+        this.tumble(sign(target.x - c.x) * 900, -Math.min(1150, Math.max(150, (c.y - target.y) * 2.6)), sign(target.x - c.x) * 18);
         this.thrown = 1;
         break;
       }
       case 'quarantine': {
+        if (sig && !this.scan) {
+          // Full System Scan: a scanline sweeps the whole screen and quarantines whatever it crosses
+          this.cd = rand(10, 13);
+          this.used = 'fullScan';
+          this.say(pick(['FULL SYSTEM SCAN!', 'Scanning ALL sectors!', 'Nobody leaves until the scan is done!']));
+          g.sfx('scan');
+          this.scan = { x: c.x, dir: sign(target.x - c.x), hostile, hit: false };
+          break;
+        }
         if (d > 420) return;
-        this.cd = rand(9, 12);
+        this.cd = rand(6, 8);
         shout();
         g.sfx('scan');
         g.fx.beam(c.x, c.y - 10, target.x, target.y, '#2ee87a', 0.5, 4);
-        if (hostile) g.hitCursor(6, target.x, target.y);
-        else { s.st.caged = 2; s.hurt(5, 0, 0, { app: this }); }
+        if (hostile) g.hitCursor(6 * this.T.dmg, target.x, target.y, false, 'possessed');   // pow is ally calibration only
+        else { s.st.caged = 2; s.hurt(DMG.quarantine, 0, 0, { app: this }); }
         break;
       }
       case 'command': {
-        this.cd = rand(6, 9);
+        this.cd = rand(5, 7);
+        if (sig && this.kind === 'terminal') { this.forkBomb(target, owner); break; }
         const cmds = hostile ? ['sudo rage', 'make chaos', 'yes | bad'] : ['sudo stop', 'kill -9 stick', 'chmod -x stick', '> /dev/null', 'git revert stick', 'shutdown -h stick'];
         const txt = pick(cmds);
         this.say('$ ' + txt);
         const tb = new TextBlock(target.x + rand(-20, 20), Math.max(20, target.y - 260), txt, owner);
+        tb.dmgMul = this.dmgMul;
+        if (!hostile) Object.assign(tb, { app: this, hitDmg: DMG.command });
         g.addObject(tb);
         break;
       }
       case 'devour': {
         if (hostile) return;
-        if (this.eatNearby(true)) { this.cd = 1; return; }
+        if (this.eatNearby(true)) { this.cd = 1; this.used = 'eatJunk'; return; }
+        // junk it ate, or him floating out of reach overhead: spit things at him
+        const above = s.top < this.y - 120;
+        if ((this.belly > 0 || above) && d < 420 && d > 70) {
+          // Recycle: spit everything he ate back at him
+          this.cd = rand(3, 4);
+          this.used = 'recycle';
+          this.say(pick(['RECYCLE!', 'Returning your junk!', 'Ptoo! Ptoo! Ptoo!']));
+          const n = Math.max(2, this.belly + 1);
+          this.belly = 0;
+          for (let i = 0; i < n; i++) {
+            g.after(i * 160, () => {
+              const cc = this.center, t = s.center;
+              const a = Math.atan2(t.y - cc.y, t.x - cc.x) + rand(-0.12, 0.12);
+              g.projectiles.push(new Projectile(cc.x, cc.y - 18, Math.cos(a) * 620, Math.sin(a) * 620 - 160, {
+                owner, type: 'text', text: pick(['🗑', '📄', '🥫', '🍌']), r: 11, dmg: DMG.spit, gravity: 380, src: { app: this },
+              }));
+              this.squash = 1;
+            });
+          }
+          break;
+        }
         if (d < 60 && !s.ragdolled && s.st.devoured <= 0) {
           this.cd = rand(7, 10);
           shout();
@@ -369,9 +454,16 @@ export class AppActor {
             const cc = this.center;
             s.x = cc.x; s.y = cc.y - 20; s.mode = 'air'; s.vx = this.dir * 300; s.vy = -500;
             s.st.devoured = 0;
-            s.hurt(14, this.dir * 500, -600, { force: true, app: this });
+            s.hurt(DMG.devour, this.dir * 500, -600, { force: true, app: this });
             this.say(pick(['Bleh! Tastes like orange.', 'Spit out!', 'Too spicy!']));
           });
+        } else if (d < 300) {
+          // too far to swallow: lunge at him, lid first
+          this.cd = rand(3, 4.5);
+          this.used = 'lunge';
+          this.jump(target.x, target.y + 10);
+          this.vx = sign(target.x - this.x) * 560;
+          this.dashT = 0.6;
         } else this.cd = 0.4;
         break;
       }
@@ -415,7 +507,7 @@ export class AppActor {
         const a = Math.atan2(target.y - c.y, target.x - c.x);
         const sp = 520;
         g.projectiles.push(new Projectile(c.x, c.y - 10, Math.cos(a) * sp, Math.sin(a) * sp - 120, {
-          owner, type: 'text', text: sym, r: 10, dmg: 5, gravity: 300, color: this.L.ability === 'numbers' ? '#ffb703' : '#4cc9f0',
+          owner, type: 'text', text: sym, r: 10, dmg: DMG.shot, gravity: 300, src: hostile ? null : { app: this }, color: this.L.ability === 'numbers' ? '#ffb703' : '#4cc9f0',
           target: this.L.ability === 'letters' ? () => (hostile ? g.cursorTarget() : s.center) : null,
         }));
         break;
@@ -432,6 +524,46 @@ export class AppActor {
     }
   }
 
+  // Bash's signature: a fork bomb rains little processes on him. With root (boss) it opens
+  // with a heavy "sudo rm -rf".
+  forkBomb(target, owner) {
+    const g = this.g;
+    this.used = 'forkBomb';
+    const root = this.tier === 'boss';
+    this.say(root ? '# sudo rm -rf /stickman' : '$ :(){ :|:& };:');
+    g.fx.popText(this.center.x, this.center.y - 40, root ? 'ROOT ACCESS' : 'FORK BOMB', '#7CFF8A', 18);
+    const drop = (txt, i, dx, big) => g.after(i * 180, () => {
+      const tb = new TextBlock(target.x + dx, Math.max(20, target.y - 300 - i * 20), txt, owner);
+      tb.dmgMul = this.dmgMul * (big ? 1 : 0.5);
+      if (owner !== 'stick') Object.assign(tb, { app: this, hitDmg: DMG.command * (big ? 1.2 : 0.6) });
+      g.addObject(tb);
+    });
+    if (root) drop('sudo rm -rf /stickman', 0, 0, true);
+    for (let i = 0; i < 5; i++) drop(pick([':()', '{ :|:& }', 'fork()', '&', 'SIGKILL', 'zombie']), i + (root ? 2 : 0), rand(-140, 140));
+  }
+
+  // Guardian's full scan: the line moves across the screen, so dodging it is about timing.
+  scanTick(dt) {
+    const g = this.g, sc = this.scan, s = g.stick;
+    if (g.mode !== 'fight') { this.scan = null; return; }
+    const px = sc.x;
+    sc.x += sc.dir * 900 * dt;
+    if (!sc.hit) {
+      const tx = sc.hostile ? g.pointer.x : s.center.x;
+      if ((px - tx) * (sc.x - tx) <= 0) {
+        sc.hit = true;
+        if (sc.hostile) g.hitCursor(10 * this.T.dmg, g.pointer.x, g.pointer.y, true, 'possessed');
+        else if (s.st.devoured <= 0) {
+          s.st.caged = 2.6;
+          s.stop();
+          s.hurt(DMG.scan, 0, 0, { app: this, force: true });
+          g.say(s, pick(['Hey! I\'m not a virus!', 'False positive! FALSE POSITIVE!', 'Let me out of quarantine!']));
+        }
+      }
+    }
+    if (sc.x < -20 || sc.x > g.w + 20) this.scan = null;
+  }
+
   // contact damage during dashes and rolls
   checkContact() {
     const g = this.g;
@@ -442,14 +574,26 @@ export class AppActor {
     if (!moving || s.st.devoured > 0) return;
     if (s.distTo(c.x, c.y) < SIZE / 2 + 4) {
       const vx = this.body ? this.body.vx : this.vx, vy = this.body ? this.body.vy : this.vy;
-      const sp = Math.hypot(vx, vy);
-      s.hurt(clamp(sp / 60, 6, 22), vx * 0.8, vy * 0.6 - 300, { app: this });
+      s.hurt(DMG.contact, vx * 0.8, vy * 0.6 - 300, { app: this });
+      if (this.stormT > 0) { s.st.burn = Math.max(s.st.burn, 1.5); s.burnBy = this; }
       this.dashT = 0; this.thrown = 0;
       if (this.kind === 'browser') g.fx.embers(c.x, c.y, 12);
     }
   }
 
   postUpdate(dt) {
+    if (this.scan) this.scanTick(dt);
+    this.stormT = Math.max(0, (this.stormT || 0) - dt);
+    // Tab Storm: chain the next dash once he lands
+    if (this.dashChain > 0 && this.mode === 'ground' && this.g.mode === 'fight' && (this.chainT = (this.chainT || 0) + dt) > 0.25) {
+      this.chainT = 0;
+      this.dashChain--;
+      const t = this.possessed > 0 ? this.g.cursorTarget() : this.g.stick.center;
+      this.jump(t.x, t.y + 10);
+      this.vx = sign(t.x - this.x) * 680;
+      this.dashT = 0.6;
+    }
+    if (this.g.mode !== 'fight') this.dashChain = 0;
     this.dashT = Math.max(0, (this.dashT || 0) - dt);
     if (this.dashT > 0 && this.kind === 'browser') this.g.fx.embers(this.center.x, this.center.y, 2);
     this.checkContact();
@@ -512,14 +656,44 @@ export class AppActor {
     gx.restore();
     if (g.mode === 'fight' && this.hp < this.maxHp && this.down <= 0) {
       const w = 36, x = c.x - w / 2, y = c.y - SIZE / 2 - 22;
-      gx.fillStyle = 'rgba(0,0,0,0.45)'; gx.fillRect(x, y, w, 4);
-      gx.fillStyle = this.possessed > 0 ? '#c77dff' : '#7CFF8A';
-      gx.fillRect(x, y, (w * this.hp) / this.maxHp, 4);
+      if (this.hp < this.maxHp) {
+        gx.fillStyle = 'rgba(0,0,0,0.45)'; gx.fillRect(x, y, w, 4);
+        gx.fillStyle = this.possessed > 0 ? '#c77dff' : '#7CFF8A';
+        gx.fillRect(x, y, (w * this.hp) / this.maxHp, 4);
+      }
+      if (this.tier !== 'normal') {
+        // tier tag, so it's clear who the heavy hitters are
+        gx.font = '800 9px system-ui, sans-serif'; gx.textAlign = 'center';
+        gx.lineWidth = 3; gx.strokeStyle = 'rgba(0,0,0,0.6)';
+        const tag = `${this.T.badge} ${this.T.label.toUpperCase()}`;
+        gx.strokeText(tag, c.x, y - 6);
+        gx.fillStyle = this.T.color; gx.fillText(tag, c.x, y - 6);
+      }
     }
+    if (this.job) {
+      gx.font = '700 10px system-ui, sans-serif'; gx.textAlign = 'center';
+      gx.lineWidth = 3; gx.strokeStyle = 'rgba(0,0,0,0.6)';
+      gx.strokeText('🧹 cleaning up', c.x, c.y - SIZE / 2 - 14);
+      gx.fillStyle = '#fff'; gx.fillText('🧹 cleaning up', c.x, c.y - SIZE / 2 - 14);
+    }
+    if (this.scan) this.drawScan(gx);
     if (this.down > 0) {
       gx.font = '600 10px system-ui'; gx.fillStyle = 'rgba(255,255,255,0.9)'; gx.textAlign = 'center';
       gx.fillText('(Not Responding)', c.x, c.y - SIZE / 2 - 14);
     }
+    gx.restore();
+  }
+
+  drawScan(gx) {
+    const g = this.g, x = this.scan.x, d = this.scan.dir;
+    gx.save();
+    gx.fillStyle = 'rgba(46,232,122,0.12)';
+    gx.fillRect(d > 0 ? x - 60 : x, 0, 60, g.h);
+    gx.fillStyle = 'rgba(46,232,122,0.85)';
+    gx.fillRect(x - 1.5, 0, 3, g.h);
+    gx.font = '800 11px ui-monospace, monospace'; gx.textAlign = 'center';
+    gx.fillText('SCANNING…', x, 150);
+    gx.restore();
   }
 
   drawLimbs(gx, x, y, flail) {

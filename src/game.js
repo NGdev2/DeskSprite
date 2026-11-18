@@ -7,7 +7,7 @@ import { Stickman } from './stickman/stickman.js';
 import { Brain, power } from './stickman/brain.js';
 import { AppActor } from './actors/app.js';
 import { ARCHETYPES, archetypeFor } from './actors/art.js';
-import { line } from './actors/lore.js';
+import { line, tierOf } from './actors/lore.js';
 import { FX } from './fx/fx.js';
 import { Sound } from './fx/sound.js';
 import { FileCopy, Ball, Cookie, drawInk, Projectile } from './world/objects.js';
@@ -717,13 +717,14 @@ export class Game {
       if (hitD > 10) continue;
       o.hitCd = 0.45;
       const mass = clamp(b.m / 6, 0.5, 3);
-      let dmg = fighting ? clamp((v / 90) * mass * (o.dmgMul || 1), 4, 32) : 0;
-      if (o.kind === 'textblock') dmg = Math.min(dmg, 7);
+      let dmg = fighting ? clamp((v / 90) * mass * (o.dmgMul || 1), 4, 18) : 0;
+      if (o.kind === 'textblock') dmg = Math.min(dmg, 7 * (o.dmgMul || 1));
+      if (o.app) { dmg = o.hitDmg; o.spent = true; }   // an app's command block: hits once, credited to the app
       const kx = b.vx * 0.7, ky = b.vy * 0.5 - 250;
-      if (fighting) s.hurt(dmg, kx, ky, { obj: o });
+      if (fighting) s.hurt(dmg, kx, ky, o.app ? { obj: o, app: o.app } : { obj: o });
       else if (v > 600) { s.knock(kx, ky); this.stats.anger = clamp(this.stats.anger + 6, 0, 100); }
       if (o.kind === 'drawn') {
-        if (o.material === 'fire') { s.st.burn = 3; this.fx.embers(b.x, b.y, 12); if (fighting) s.hurt(4, 0, 0, { invuln: 0 }); }
+        if (o.material === 'fire') { s.st.burn = 3; s.burnBy = null; this.fx.embers(b.x, b.y, 12); if (fighting) s.hurt(4, 0, 0, { invuln: 0, by: 'fire' }); }
         if (o.material === 'ice') { s.st.frozen = 1.6; this.fx.frost(b.x, b.y, 14); }
         if (o.material === 'bouncy') { b.vx *= -0.8; b.vy = -Math.abs(b.vy) * 0.8; }
       }
@@ -731,7 +732,14 @@ export class Game {
     }
 
     // burning damage
-    if (fighting && s.st.burn > 0) s.hp = Math.max(0, s.hp - dt * 2.5);
+    if (fighting && s.st.burn > 0) {
+      s.hp = Math.max(this.koFloor(), s.hp - dt * 2.5);
+      if (this.report) {
+        const by = s.burnBy ? 'ally ' + s.burnBy.kind : 'burn';   // Tab Storm's fire counts as Foxy's
+        this.report.dmgToStick += dt * 2.5;
+        this.report.dmgBy[by] = (this.report.dmgBy[by] || 0) + dt * 2.5;
+      }
+    }
     if (fighting && s.hp <= 0 && this.mode === 'fight') this.endFight('user');
 
     // projectiles
@@ -755,7 +763,7 @@ export class Game {
         }
       } else if (s.st.devoured <= 0 && s.distTo(p.x, p.y) < p.r) {
         p.dead = true;
-        s.hurt(p.dmg, p.vx * 0.4, p.vy * 0.4 - 150);
+        s.hurt(p.dmg, p.vx * 0.4, p.vy * 0.4 - 150, p.src || { by: p.type });
       }
     }
   }
@@ -794,7 +802,7 @@ export class Game {
       const sc = this.stick.center;
       const ranked = this.apps.filter((a) => a.alive && a.possessed <= 0)
         .sort((a, b) => dist(a.center.x, a.center.y, sc.x, sc.y) - dist(b.center.x, b.center.y, sc.x, sc.y));
-      this.engaged = new Set(ranked.slice(0, 3));
+      this.engaged = new Set(ranked.slice(0, 2));
     }
     this.brain.update(sdt);
     this.stick.update(sdt);

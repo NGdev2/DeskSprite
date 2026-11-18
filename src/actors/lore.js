@@ -4,104 +4,120 @@ import { pick } from '../util.js';
 
 export const APPS = {
   browser: {
-    nick: 'Foxy', title: 'Guardian of the Web', ability: 'dash', hp: 70, speed: 150,
+    nick: 'Foxy', title: 'Guardian of the Web', ability: 'dash', tier: 'strong', sig: 'Tab Storm', pow: 1.1, hp: 70, speed: 150,
     idle: ['47 tabs open and I regret nothing.', 'Has anyone seen my bookmarks?', 'Loading… loading… ok I\'m back.', 'I\'ve seen things on the internet you wouldn\'t believe.'],
     fight: ['Fire dash!', 'Tab out of here!', 'You\'re getting a 404 to the face!', 'Refresh THIS!'],
     hurt: ['Ow, my cache!', 'Connection lost…'],
     stick: ['Stop clicking on suspicious links, stickman.', 'You again? Browse somewhere else.'],
   },
   antivirus: {
-    nick: 'Guardian', title: 'Paranoid Protector', ability: 'quarantine', hp: 90, speed: 95,
+    nick: 'Guardian', title: 'Paranoid Protector', ability: 'quarantine', tier: 'boss', sig: 'Full System Scan', pow: 2.4, hp: 90, speed: 95,
     idle: ['Scanning… 0 threats. Suspicious.', 'Database updated. Trust no one.', 'Did that pixel just move?', 'Real-time protection: ON. Real-time anxiety: ON.'],
     fight: ['THREAT DETECTED!', 'Quarantine protocol engaged!', 'You are a virus and I will prove it!', 'Heuristic analysis: you\'re going down.'],
     hurt: ['Firewall breached!', 'Definitions… outdated…'],
     stick: ['I\'m watching you, unsigned executable.', 'Your signature does not match any known friend.'],
   },
   terminal: {
-    nick: 'Bash', title: 'Grumpy Old Shell', ability: 'command', hp: 80, speed: 85,
+    nick: 'Bash', title: 'Grumpy Old Shell', ability: 'command', tier: 'strong', sig: 'Fork Bomb', pow: 2.0, hp: 80, speed: 85,
     idle: ['$ uptime  …nobody appreciates me.', 'Real users type. Mice are for cats.', 'It works on my machine.', '$ fortune  →  "You will be attacked by a stickman."'],
     fight: ['$ sudo throw --hard', '$ echo "BLOCK" > /dev/stickman', 'Permission denied, kid.', '$ kill -9 attitude'],
     hurt: ['Segmentation fault (core dumped)', '^C ^C ^C'],
     stick: ['Did you just pipe yourself into my stdin?', 'Kid, read the man page.'],
   },
   trash: {
-    nick: 'Binny', title: 'Always Hungry', ability: 'devour', hp: 110, speed: 70,
+    nick: 'Binny', title: 'Always Hungry', ability: 'devour', tier: 'strong', sig: 'Recycle', pow: 2.6, hp: 110, speed: 70,
     idle: ['Got any old files? I\'m starving.', 'Nom. Recycled.', 'Empty me? Never!', 'One app\'s junk is my lunch.'],
     fight: ['CHOMP!', 'Into the bin you go!', 'Recycling… YOU!', 'I eat stickmen for breakfast!'],
     hurt: ['Ugh, I\'m full of holes now.', 'Spilled everything!'],
     stick: ['You smell like a deleted file.', 'Stay still, I\'m just going to… taste you.'],
   },
   folder: {
-    nick: 'Folda', title: 'Shy Keeper of Things', ability: 'shield', hp: 100, speed: 90,
+    nick: 'Folda', title: 'Shy Keeper of Things', ability: 'shield', tier: 'normal', hp: 100, speed: 90,
     idle: ['I keep everything organized… mostly.', 'Please don\'t open me in public.', 'Subfolder of a subfolder of a…', 'Shhh, I\'m hiding the homework.'],
     fight: ['Shield up!', 'Get behind me!', 'Folder… FORTRESS!', 'Nothing gets through my tabs!'],
     hurt: ['My papers!', 'I\'m getting zipped up!'],
     stick: ['Please don\'t rename me again.', 'Eek! Not my contents!'],
   },
   paint: {
-    nick: 'Brushy', title: 'Dreamy Artist', ability: 'repair', hp: 60, speed: 100,
+    nick: 'Brushy', title: 'Dreamy Artist', ability: 'repair', tier: 'normal', hp: 60, speed: 100,
     idle: ['Every pixel is a tiny canvas.', 'Who needs layers? I live in the moment.', 'That wallpaper needs more purple.', 'I paint, therefore I am.'],
     fight: ['Patching the cracks!', 'A little touch-up!', 'Art heals!', 'Undo! Undo! UNDO!'],
     hurt: ['My palette!', 'Smudged!'],
     stick: ['You know you were DRAWN, right? You\'re my cousin!', 'Hold still, I want to paint you in blue.'],
   },
   music: {
-    nick: 'Tune', title: 'Chill Vibes Only', ability: 'dance', hp: 60, speed: 100,
+    nick: 'Tune', title: 'Chill Vibes Only', ability: 'dance', tier: 'weak', hp: 60, speed: 100,
     idle: ['♪ lo-fi beats to fight stickmen to ♪', 'Turn it up!', 'This next track is a banger.', 'Shuffle mode is a lifestyle.'],
     fight: ['DROP THE BEAT!', 'Everybody dance now!', 'Can\'t fight if you\'re grooving!', 'Bass boost!'],
     hurt: ['Record scratch!', 'Buffering…'],
     stick: ['You\'ve got rhythm, stick dude.', 'Dance battle? Any time.'],
   },
   calculator: {
-    nick: 'Calc', title: 'Nerd With Numbers', ability: 'numbers', hp: 60, speed: 90,
+    nick: 'Calc', title: 'Nerd With Numbers', ability: 'numbers', tier: 'weak', pow: 0.45, hp: 60, speed: 90,
     idle: ['0.1 + 0.2 = 0.30000000000000004. I hate it here.', 'Did you know π never ends?', 'I computed 42 possible futures. You lose in all of them.', 'Divide and conquer.'],
     fight: ['Have some π!', 'Order of operations: YOU first!', 'Divided by ZERO!', 'Exponential damage!'],
     hurt: ['ERROR', 'NaN… NaN…'],
     stick: ['Your stickiness is statistically improbable.', 'I calculated your weakness: stairs.'],
   },
   settings: {
-    nick: 'Cog', title: 'Gearhead', ability: 'roll', hp: 90, speed: 140,
+    nick: 'Cog', title: 'Gearhead', ability: 'roll', tier: 'normal', pow: 2.0, hp: 90, speed: 140,
     idle: ['Have you tried turning it off and on?', 'Toggle. Untoggle. Toggle.', 'I control the brightness. Fear me.', 'Default settings are for cowards.'],
     fight: ['Rolling out!', 'Settings changed: YOU = flat!', 'Gear grind!', 'Torque!'],
     hurt: ['Grinding noises…', 'Reset to factory…'],
     stick: ['Who enabled you?', 'You\'re not in my config.'],
   },
   clock: {
-    nick: 'Tick', title: 'Keeper of Time', ability: 'slow', hp: 70, speed: 80,
+    nick: 'Tick', title: 'Keeper of Time', ability: 'slow', tier: 'normal', hp: 70, speed: 80,
     idle: ['Tick. Tock. Tick.', 'You\'re late. You\'re always late.', 'Time flies. I don\'t.', 'Did anyone set an alarm for the fight?'],
     fight: ['TIME… SLOWS!', 'Slow-motion mode!', 'You\'re out of time!', 'Pause!'],
     hurt: ['My gears!', 'Running slow…'],
     stick: ['It\'s nap time, stickman.', 'Your time is almost up.'],
   },
   mail: {
-    nick: 'Posty', title: 'Unread Messenger', ability: 'letters', hp: 60, speed: 120,
+    nick: 'Posty', title: 'Unread Messenger', ability: 'letters', tier: 'weak', pow: 0.4, hp: 60, speed: 120,
     idle: ['You have 9,999 unread messages.', 'Reply all? Bold move.', 'Spam, spam, spam…', 'Sent from my desktop.'],
     fight: ['Express delivery!', 'Return to sender!', 'Paper cuts incoming!', 'SPAM ATTACK!'],
     hurt: ['Undeliverable!', 'Bounced!'],
     stick: ['There\'s a letter for you. It says "go away".', 'You\'ve been flagged as spam.'],
   },
   chat: {
-    nick: 'Ping', title: 'Notification Machine', ability: 'ping', hp: 60, speed: 120,
+    nick: 'Ping', title: 'Notification Machine', ability: 'ping', tier: 'weak', pow: 0.45, hp: 60, speed: 120,
     idle: ['Ping! Ping! Ping!', 'Someone is typing…', 'Seen 2 min ago.', '@everyone hi'],
     fight: ['PING!', 'Notification storm!', 'You\'ve been muted!', 'Mention spam!'],
     hurt: ['Disconnected…', 'Rate limited!'],
     stick: ['New phone who dis?', 'Typing… typing… go away.'],
   },
   code: {
-    nick: 'Dev', title: 'Caffeinated Editor', ability: 'command', hp: 80, speed: 100,
+    nick: 'Dev', title: 'Caffeinated Editor', ability: 'command', tier: 'normal', pow: 1.3, hp: 80, speed: 100,
     idle: ['It compiled on the first try. Something is wrong.', 'Just one more refactor.', 'Tabs. Not spaces. Fight me.', 'TODO: fix later (2019)'],
     fight: ['Compile this!', 'Syntax error in your FACE!', 'Debugging you!', 'git push --force!'],
     hurt: ['Stack overflow!', 'Merge conflict!'],
     stick: ['Who wrote you? There are no comments.', 'You\'re a bug, not a feature.'],
   },
   game: {
-    nick: 'Joy', title: 'Player One', ability: 'dash', hp: 70, speed: 140,
+    nick: 'Joy', title: 'Player One', ability: 'dash', tier: 'normal', pow: 1.6, hp: 70, speed: 140,
     idle: ['Just one more level.', 'Achievement unlocked: idle.', 'Press START to continue.', 'GG EZ.'],
     fight: ['COMBO!', 'Critical hit!', 'Boss fight!', 'Respawning… just kidding, ATTACK!'],
     hurt: ['Game over?!', 'Lag!'],
     stick: ['You look like a final boss.', 'Player two has entered the game.'],
   },
 };
+
+// Power tiers: multipliers on an app's hp, damage, walking speed and ability cooldowns.
+// An app's own `pow` evens out how efficient its ability is (a dash lands more often than a falling
+// command), measured with game.duels(), so the tier alone decides who hits hardest.
+export const TIERS = {
+  weak:   { label: 'Weak',   badge: '▫',  hp: 0.65, dmg: 0.6, speed: 0.85, cd: 1.35, color: '#9aa4b2' },
+  normal: { label: 'Normal', badge: '▪▪', hp: 1,    dmg: 1,   speed: 1,    cd: 1,    color: '#7CFF8A' },
+  strong: { label: 'Strong', badge: '★',  hp: 1.5,  dmg: 1.4, speed: 1.1,  cd: 0.8,  color: '#ffb703' },
+  boss:   { label: 'Boss',   badge: '👑', hp: 2.4,  dmg: 1.8, speed: 1.05, cd: 0.7,  color: '#ff5d8f' },
+};
+
+// Bash gets root at high stickman levels and becomes a second boss.
+export function tierOf(kind, level = 1) {
+  if (kind === 'terminal' && level >= 4) return 'boss';
+  return APPS[kind]?.tier || 'normal';
+}
 
 export const STICK = {
   chill: ['Nice desktop you got here.', 'I live here now.', 'Hmm, what does this button do?', 'Just vibing.', 'Is it me or is this wallpaper moving?', 'Your windows are very comfy.', '*whistles*'],

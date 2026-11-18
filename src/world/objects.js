@@ -446,6 +446,7 @@ export class Projectile {
     this.target = opts.target || null; // homing target {x,y} getter
     this.turn = opts.turn ?? 3;        // homing turn rate, rad/s
     this.aim = opts.aim || null;       // where a stick shot "hits the screen"
+    this.src = opts.src || null;       // {app} when one of your apps fired it
   }
   update(dt, g) {
     this.t += dt;
