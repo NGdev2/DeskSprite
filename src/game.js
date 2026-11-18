@@ -589,6 +589,7 @@ export class Game {
   }
 
   cleanupFight() {
+    if (this.mode !== 'ending') return;   // Esc may have skipped the result screen already
     this.mode = 'chill';
     this.stick.stance = null;
     this.stick.aura = null;
@@ -996,6 +997,10 @@ export class Game {
     this.timers = this.timers.filter((t) => t.t > 0);
     for (const tm of due) { try { tm.fn(); } catch (e) { this.ctx.log('timer error', String(e?.stack || e)); } }
 
+    if (this.mode === 'fight' && this.arena?.hold) {
+      this.arena.update(dt);
+      return true;
+    }
     this.rebuildPlatforms();
     if (this.mode === 'fight') {
       const sc = this.stick.center;
