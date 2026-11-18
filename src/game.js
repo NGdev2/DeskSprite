@@ -17,6 +17,10 @@ import { Hitboxes } from './ui/hitboxes.js';
 import { Cleanup } from './world/cleanup.js';
 import { clamp, rand, pick, chance, dist, TAU } from './util.js';
 
+// Repaint rate in chill while something moves (fights run at 60). The host recomposites the whole
+// screen on every change, so this is the main cost of an awake stickman: measured (DS-11) about
+// 18% of a core at 15 fps vs 14% at 10 fps, with 7.5% while he sleeps.
+const CALM_FPS = 10;
 const DEFAULT_STATS = { energy: 85, fun: 70, food: 75, anger: 0, xp: 0, level: 1, wins: 0, losses: 0, fights: 0, bonds: {}, apps: [] };
 const FAKE_FILES = [
   { name: 'homework_final_v3.docx', kind: 'file' },
@@ -123,7 +127,7 @@ export class Game {
     ctx.on('message', ({ data }) => this.onMessage(data));
     ctx.every(1000, () => { this.refreshWidgets(); if (this.dormant) this.dormantTick(1); });
     ctx.every(10000, () => this.save());
-    this.stopLoop = ctx.raf((dt) => this.frame(dt));
+    this.startLoop();
 
     // read-only snapshots of what's on this computer (names and icons only)
     ctx.host.apps?.().then((a) => { this.hostApps = Array.isArray(a) ? a : []; this.restoreApps(); }).catch(() => { this.hostApps = []; this.restoreApps(); });
@@ -182,11 +186,21 @@ export class Game {
     if (this.stick.action?.name !== 'sleep' || this.brain.act?.name !== 'sleep') this.wake();
   }
 
+  // Fights run on a 60 Hz animation frame. Chill runs on a 30 Hz timer: a 60 Hz
+  // requestAnimationFrame alone costs the host several percent of a core, even with nothing drawn.
+  startLoop() {
+    this.stopLoop?.();
+    if (this.mode === 'chill') {
+      let last = performance.now();
+      this.stopLoop = this.ctx.every(33, () => { const now = performance.now(); this.frame((now - last) / 1000); last = now; });
+    } else this.stopLoop = this.ctx.raf((dt) => this.frame(dt));
+  }
+
   wake() {
     if (!this.dormant) return;
     this.dormant = false;
     this.listenPointer();
-    this.stopLoop = this.ctx.raf((dt) => this.frame(dt));
+    this.startLoop();
   }
 
   destroy() {
@@ -372,6 +386,7 @@ export class Game {
     const prev = this.bubbles.get(entity);
     try { prev?.close(); } catch { /* bubble already gone */ }
     const duration = opts.duration || clamp(1800 + text.length * 55, 2200, 6000);
+    entity.sayUntil = performance.now() + duration;   // its hitbox (the bubble's anchor) keeps up meanwhile
     try {
       const b = this.ctx.say(text, { anchor: el || { x: entity.center.x, y: entity.center.y - 40 }, duration });
       this.bubbles.set(entity, b);
@@ -524,6 +539,7 @@ export class Game {
     this.brain.cancelChallenge();
     this.cleanup.cancel();
     this.mode = 'fight';
+    if (!this.dormant) this.startLoop();
     const S = this.stats;
     this.exhibition = !!opts.autopilot || !!opts.level;
     // an exhibition leaves saved state alone: freeze the saved roster and put it back afterwards
@@ -606,6 +622,7 @@ export class Game {
   cleanupFight() {
     if (this.mode !== 'ending') return;   // Esc may have skipped the result screen already
     this.mode = 'chill';
+    if (!this.dormant) this.startLoop();
     this.stick.stance = null;
     this.stick.aura = null;
     this.stick.alpha = 1;
@@ -1005,7 +1022,21 @@ export class Game {
   // ---------------------------------------------------------------- loop
   frame(rawDt) {
     if (this.hidden || this.paused || this.dormant) return;
-    let dt = Math.min(rawDt, 1 / 20);
+    const dt = Math.min(rawDt, 1 / 20);
+    // physics runs in 1/60 s substeps, so the 30 Hz chill loop throws and ragdolls exactly like 60 Hz
+    const n = Math.max(1, Math.round(dt * 60));
+    for (let i = 0; i < n; i++) {
+      if (this.step(dt / n)) {   // the first-fight help holds the fight: only the HUD runs
+        this.hit.sync();
+        if (!this.ff) this.render();
+        return;
+      }
+    }
+    this.paint(dt);
+  }
+
+  // One simulation step. Returns true while the fight is held.
+  step(dt) {
     if (this.warpT > 0) { this.warpT -= dt; if (this.warpT <= 0) this.timeScale = 1; }
     const sdt = dt * this.timeScale;
     this.t += sdt;
@@ -1050,17 +1081,28 @@ export class Game {
       this.ink = Math.min(this.maxInk, this.ink + dt * 9);
     }
     this.arena?.update(dt);
-    this.hit.sync();
+    this.cleanup.update(dt);
+    return false;
+  }
+
+  paint(dt) {
     // the game layer is a full-screen canvas: repaint less often when little is going on
     this.renderAcc = (this.renderAcc || 0) + dt;
     const calm = this.mode === 'chill' && !this.hit.drag && this.fx.parts.length < 20;
-    const fps = !calm ? 60 : this.stick.action?.name === 'sleep' ? 10 : 24;
-    if (this.renderAcc >= 1 / fps - 0.002) {
+    if (!calm) this.hit.sync();
+    // nobody at the computer for 30 s: half the repaint rate (the next pointer move restores it)
+    const away = performance.now() - (this.lastMove || 0) > 30000;
+    const fps = !calm ? 60 : this.stick.action?.name === 'sleep' ? 10 : (this.calmFps || CALM_FPS) / (away ? 2 : 1);
+    if (this.renderAcc >= 1 / fps - 0.002 && !this.ff) {
       this.renderAcc = 0;
       // every repaint makes the host recomposite the whole transparent screen, so skip
       // frames where nothing visible moved (he's standing still, sitting, asleep…)
       const sig = calm ? this.signature() : null;
-      if (!sig || sig !== this.lastSig) { this.lastSig = sig; this.render(); }
+      if (!sig || sig !== this.lastSig) {
+        this.lastSig = sig;
+        if (calm) this.hit.sync(true);   // DOM writes ride along with a repaint, lazily
+        this.render();
+      }
     }
     if (this.canDoze()) this.doze();
   }

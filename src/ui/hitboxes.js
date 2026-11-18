@@ -57,20 +57,28 @@ export class Hitboxes {
     el.style.transform = `translate(${x1}px, ${y1}px)`;
   }
 
-  sync() {
+  // lazy (calm chill): every DOM move costs a full-screen recomposite, so only things near the
+  // pointer or talking (their bubble follows them) move every time; the rest about once a second.
+  sync(lazy = false) {
     const g = this.g;
     const live = new Set();
     const s = g.stick;
+    const now = performance.now();
+    // far ones all catch up together once a second: one recomposite instead of one per hitbox
+    const sweep = !lazy || now - (this.sweepT || 0) > 1000;
+    if (sweep) this.sweepT = now;
+    const due = (ent, el, x, y) => sweep || (ent.sayUntil || 0) > now || Math.abs(x - g.pointer.x) + Math.abs(y - g.pointer.y) < 400;
     live.add(s);
     let el = this.map.get(s) || this.make(s, 'stick');
     const b = s.bounds();
-    if (b) this.place(el, b.x1 - 8, b.y1 - 6, b.x2 + 8, b.y2 + 4);
-    el.style.display = s.st.devoured > 0 ? 'none' : '';
+    if (b && due(s, el, s.x, s.y)) this.place(el, b.x1 - 8, b.y1 - 6, b.x2 + 8, b.y2 + 4);
+    const disp = s.st.devoured > 0 ? 'none' : '';
+    if (el.style.display !== disp) el.style.display = disp;   // unchanged writes still cost a recomposite
     for (const a of g.apps) {
       live.add(a);
       el = this.map.get(a) || this.make(a, 'app');
       const c = a.center;
-      this.place(el, c.x - 28, c.y - 28, c.x + 28, c.y + 36);
+      if (due(a, el, c.x, c.y)) this.place(el, c.x - 28, c.y - 28, c.x + 28, c.y + 36);
     }
     for (const o of g.objects) {
       if (o.kind !== 'file' || o.broken) continue;

@@ -228,7 +228,7 @@ export class AppActor {
     if (g.stick.action?.name === 'sleep') { this.talkT = Math.max(this.talkT, 5); return; }
     this.idleT -= dt;
     if (this.idleT <= 0 && !this.goal) {
-      this.idleT = rand(3, 9);
+      this.idleT = rand(6, 16);   // calm between strolls: every moving frame costs a full-screen recomposite
       if (chance(0.25)) {
         // hop to another platform sometimes
         const other = pick(g.platforms.filter((p) => p.x2 - p.x1 > 80));

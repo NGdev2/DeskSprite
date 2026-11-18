@@ -50,13 +50,14 @@ export class Nest {
 
   update() {
     const g = this.g, S = g.stats, s = g.stick;
-    this.$('.nest-name').textContent = g.settings.name;
-    this.$('.nest-lv').textContent = `Lv ${S.level}`;
-    this.$('.nest-rec').textContent = `W ${S.wins} · L ${S.losses}`;
+    this.text('.nest-name', g.settings.name);
+    this.text('.nest-lv', `Lv ${S.level}`);
+    this.text('.nest-rec', `W ${S.wins} · L ${S.losses}`);
     for (const k of ['energy', 'fun', 'food']) {
       const u = this.$('.b-' + k);
-      u.style.width = Math.round(S[k]) + '%';
-      u.classList.toggle('low', S[k] < 25);
+      const w = Math.round(S[k]) + '%';
+      if (u.style.width !== w) u.style.width = w;
+      if (u.classList.contains('low') !== S[k] < 25) u.classList.toggle('low', S[k] < 25);
     }
     let mood = '🙂';
     const avg = (S.energy + S.fun + S.food) / 3;
@@ -68,13 +69,31 @@ export class Nest {
     else if (S.energy < 20) mood = '🥱';
     else if (avg > 75) mood = '😄';
     else if (avg < 35) mood = '😕';
-    this.$('.nest-mood').textContent = mood;
+    this.text('.nest-mood', mood);
     let st;
-    if (g.mode === 'fight') st = `fighting! HP ${Math.round(s.hp)}/${s.maxHp}`;
+    const c = g.cleanup;
+    if (g.mode === 'chill' && c.active && c.jobs.length) {
+      const text = `Binny is cleaning up 🧹 · ${c.jobs.length} left`;
+      this.text('.nest-status', text);
+      this.setDisabled(false);
+      return;
+    }
+    if (g.mode === 'fight') st = `fighting${g.arena?.auto ? ' the autopilot' : ''}! HP ${Math.round(s.hp)}/${s.maxHp}`;
     else if (g.challenge) st = 'wants to fight — click him!';
     else if (s.ragdolled) st = 'flying around';
     else st = ACTS[g.brain.act?.name] || 'chilling';
-    this.$('.nest-status').textContent = `${g.settings.name} is ${st}`;
-    this.$('[data-a="fight"]').disabled = g.mode !== 'chill';
+    this.text('.nest-status', `${g.settings.name} is ${st}`);
+    this.setDisabled(g.mode !== 'chill');
+  }
+
+  // Write to the DOM only when the value changed: every write makes the host recomposite the
+  // whole screen, and this runs every 400 ms.
+  text(sel, v) {
+    const n = this.$(sel);
+    if (n.textContent !== v) n.textContent = v;
+  }
+  setDisabled(on) {
+    const b = this.$('[data-a="fight"]');
+    if (b.disabled !== on) b.disabled = on;
   }
 }
