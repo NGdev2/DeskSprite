@@ -6,10 +6,14 @@ import { Nest } from './src/ui/nest.js';
 
 export async function mount(ctx) {
   const game = new Game(ctx);
-  await game.start();
-  new Nest(ctx, game);
-  // debug handle for devtools (widgetctl url / widgetctl devtools)
+  // debug handle for devtools (widgetctl url / widgetctl devtools), set before start so it never
+  // points at the previous instance while this one starts; dropped again if the start fails
   (window.__desksprite ||= {})[ctx.id] = game;
+  try { await game.start(); } catch (e) {
+    if (window.__desksprite[ctx.id] === game) delete window.__desksprite[ctx.id];
+    throw e;
+  }
+  new Nest(ctx, game);
   const offs = [
     ctx.menu.add({ label: 'Start a fight', icon: '⚔️', action: () => game.startFight() }),
     ctx.menu.add({ label: 'Watch a fight (autopilot)', icon: '🤖', action: () => game.startFight({ autopilot: true }) }),
@@ -20,6 +24,7 @@ export async function mount(ctx) {
   return () => {
     offs.forEach((off) => off?.());
     game.destroy();
-    delete window.__desksprite?.[ctx.id];
+    // overlapping remounts: only drop the handle if it still points at this game
+    if (window.__desksprite?.[ctx.id] === game) delete window.__desksprite[ctx.id];
   };
 }
