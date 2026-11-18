@@ -56,7 +56,9 @@ fast and he gets annoyed, and an annoyed stickman picks fights. Settings: name, 
 size, talking, mischief level, surprise challenges, apps waking up on their own, file
 copies, sound.
 
-**Fight mode** (Esc or 🏳️ ends it):
+**Fight mode** (Esc or 🏳️ ends it). The **❓ Help** button in the top bar (or **?** / **H**) opens
+the guide at any time, and a strip under the allies shows every shape you can draw and the keys.
+Esc in a fight only ends the fight, even with a full-screen widget open.
 
 | key | tool | |
 |---|---|---|
@@ -67,7 +69,7 @@ copies, sound.
 | 5 | ⚡ Lightning | stuns him, and frees possessed apps |
 
 **Sketchbook: shapes become weapons.** Draw roughly. Close is good enough. Press **B**
-or 📖 in a fight to see the cheat sheet. It opens by itself the first time.
+or 📖 in a fight to see the cheat sheet. The help guide opens by itself the first time.
 
 | draw | you get | |
 |---|---|---|
@@ -87,30 +89,57 @@ or 📖 in a fight to see the cheat sheet. It opens by itself the first time.
 Inks stack with shapes: a fire spear burns him, an ice crate freezes him. From level 2 he
 sometimes copies your weapon and throws it back at you.
 
-The top bar summons allies, each with its own ability:
+The top bar summons allies, each with its own ability and a power tier (shown on its button
+and over its head): ▫ weak apps have little hp and run from him, ★ strong and 👑 boss apps hit
+harder, shrug off knocks and have a signature move every third cast.
 
-- Browser: fire dash
-- Antivirus: quarantine cage
-- Terminal: falling commands
-- Trash: eats him, then spits him out
-- Folder: shield
-- Paint: repairs cracks and refills your ink
-- Music: forces everyone to dance
-- Calculator: throws numbers
-- Settings: rolls into him
-- Clock: slows time
+| app | tier | ability | signature |
+|---|---|---|---|
+| Antivirus (Guardian) | 👑 boss | quarantine cage | Full System Scan: a scanline sweeps the screen and quarantines him |
+| Terminal (Bash) | ★ strong, 👑 boss from his level 4 (root) | falling commands | Fork Bomb: a rain of processes; as root it opens with `sudo rm -rf` |
+| Browser (Foxy) | ★ strong | fire dash | Tab Storm: three fire dashes in a row |
+| Trash (Binny) | ★ strong | eats him, lunges at him, spits junk when he floats out of reach | Recycle: spits the junk it ate back at him |
+| Folder, Paint, Settings, Clock, Code, Game | ▪▪ normal | shield, repair + ink, roll, slow time, commands, dash | |
+| Music, Calculator, Mail, Chat | ▫ weak | dance, numbers, letters, pings | |
+
+Ability damage shows up as `ally <kind>` in `fightReport()`. `G.duels(kinds, level, trials)` measures how hard
+each app hits on its own.
 
 🩹 Repair heals cracks and rebuilds the file copies.
 
 You lose when the desktop's integrity bar hits zero. He wins when he cracks the screen
-enough. Leave everything to your apps and he usually wins, so join in. Wins earn him XP,
-and levels unlock new moves:
+enough. Leave everything to your apps and he usually wins, so join in. Wins earn him XP.
+Every level makes him harder to beat (against the autopilot he wins about 20% at level 1, 45%
+at level 3 and 70% at level 5): more armor, decision speed and reach, better dodging (he reacts
+sooner, blinks away, from level 4 cancels attacks to dodge and catches thrown spears), blasts
+that curve harder after your cursor and more often come in pairs, and new moves:
 
-- Level 2: drawing weapons, possession, flying kicks, ground pound, copying your weapons
-- Level 3: fire weapons, fake errors, teleport strike
-- Level 4: double blasts
+- Level 2: drawing weapons, possession, flying kicks, ground pound, copying your weapons,
+  and an ultimate (the bar under his hp): Overcharge
+- Level 3: fire weapons, fake errors, teleport strike, ultimate Ink Storm
+- Level 4: Ink Storm ends with a quake
+- Level 5: ultimate Final Form, a sweeping energy beam you have to outrun
 
-Scripts can poke him too: `widgetctl send desksprite '{"cmd":"fight"}'`. The other
+At every level he also floats up and fights from the air, and runs up onto widget tops.
+
+Fights are paced so none is over in seconds: both sides warm up over the first ~45 s, no
+ultimate before 50 s, a side that's nearly beaten gets a short comeback window, and from 100 s
+it's overtime (every hit counts more). At most 8 cracks stay on screen. A fight started while a
+widget is full screen happens in front of it. In your first fight the help opens and the fight
+waits until you close it.
+
+**Watch a fight:** right-click → *Watch a fight (autopilot)*, or
+`widgetctl send desksprite '{"cmd":"fight","autopilot":true}'`. The autopilot plays your side
+like a decent human (draws weapons, uses the tools, summons allies). Click anywhere to take
+over. Autopilot fights are exhibitions: they don't change his wins, losses or XP.
+
+**After a fight** Binny the trash bin walks to every leftover drawing and eats it (one walks in
+if it isn't around, and leaves afterwards). Each leftover is also an `orphan` ticket and up to
+five cracks stay as `crack` tickets, so WidgetSystem's **fsck** can collect or seal them first.
+Everything is gone within about a minute.
+
+Scripts can poke him too: `widgetctl send desksprite '{"cmd":"fight"}'` (add `"autopilot": true`
+to watch, and `"level": 3` to fight at another level without changing his stats). The other
 commands are `feed`, `summon` (with optional `"kind"`), `say` (with `"text"`), `pause`,
 `resume`, and `trick` with a `"name"`. Trick names are skate, juggle, fish, portal,
 moonwalk, plane, ride, meditate, handstand and sneeze.
@@ -127,12 +156,20 @@ moonwalk, plane, ride, meditate, handstand and sneeze.
 | `src/stickman/tricks.js` | skate, juggle, fish, portal, moonwalk, plane, ride…, ground pound, teleport strike |
 | `src/world/sketch.js` | shape recognition for drawn weapons, and their behaviours |
 | `src/actors/app.js` | app characters: walking, tumbling, abilities, possession |
-| `src/actors/lore.js` | personalities and dialogue |
+| `src/actors/lore.js` | personalities, dialogue and power tiers |
 | `src/actors/art.js` | built-in icons, mapping real apps to archetypes |
 | `src/world/physics.js` | one-way platforms, verlet ragdoll, rigid bodies |
 | `src/world/objects.js` | drawings, file copies, ball, cookie, bomb, text blocks, popups, projectiles |
+| `src/world/cleanup.js` | after a fight: Binny eats the leftovers; orphan and crack tickets for fsck |
 | `src/fx/` | particles, cracks, lightning, shake, glitch, synth sounds |
-| `src/ui/` | nest card, fight arena and HUD, hitboxes (click targets and bubble anchors) |
+| `src/ui/` | nest card, fight arena and HUD, the autopilot, hitboxes (click targets and bubble anchors) |
 
 Debugging: `widgetctl url` opens the desktop in a browser. `window.__desksprite[<instance id>]`
-is the live game object.
+is the live game object. On it, `fightReport()` returns the current or last fight's stats
+(duration, damage both ways by source, moves used by each side, level, winner, leftovers,
+cleanup), `fastForward(secs)` runs the game faster than real time, and `bench(level, runs)`
+plays autopilot fights in fast forward (each from the same start: no roster, just the 2 starter
+allies, and each followed by 60 s of cleanup) and puts the results in `benchResults`; his saved
+stats and apps are restored afterwards. `duels(kinds, level, trials)` does the same for single
+apps (`duelResults`). Results vary a lot from run to run: compare 100+ fights per setting. Host timers (ticket expiry, fsck)
+keep real time, so judge crack cleanup in a real-time fight.
