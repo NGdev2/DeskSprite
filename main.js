@@ -12,6 +12,7 @@ export async function mount(ctx) {
   (window.__desksprite ||= {})[ctx.id] = game;
   const offs = [
     ctx.menu.add({ label: 'Start a fight', icon: '⚔️', action: () => game.startFight() }),
+    ctx.menu.add({ label: 'Watch a fight (autopilot)', icon: '🤖', action: () => game.startFight({ autopilot: true }) }),
     ctx.menu.add({ label: 'Bring an app to life', icon: '📦', action: () => game.summonApp() }),
     ctx.menu.add({ label: 'Feed', icon: '🍪', action: () => game.feed() }),
     ctx.menu.add({ label: 'Call him home', icon: '🏠', action: () => game.callHome() }),

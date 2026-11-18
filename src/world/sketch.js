@@ -225,8 +225,8 @@ export function makeItem(game, obj, kind, info, owner = 'user') {
         g.fx.bolt(end.x, end.y, t.x, t.y);
         g.fx.bolt(t.x + rand(-40, 40), 0, t.x, t.y);
         g.sfx('zap');
-        if (owner === 'user') { g.stick.hurt(14, rand(-300, 300), -450, { force: true }); g.stick.st.stun = 0.6; g.stick.glitch = 1; }
-        else g.hitCursor(10, t.x, t.y, true);
+        if (owner === 'user') { g.stick.hurt(14, rand(-300, 300), -450, { force: true, by: 'lightning' }); g.stick.st.stun = 0.6; g.stick.glitch = 1; }
+        else g.hitCursor(10, t.x, t.y, true, 'copycat');
       }
       break;
     }
@@ -244,7 +244,7 @@ export function makeItem(game, obj, kind, info, owner = 'user') {
         if (d < 300 && !s.ragdolled && s.onGround) s.x += sign(b.x - s.x) * 90 * dt;
         if (d < 90 && (obj.spinCd = (obj.spinCd || 0) - dt) <= 0) {
           obj.spinCd = 0.8;
-          s.hurt(5, sign(c.x - b.x) * -400, -800, { force: true });
+          s.hurt(5, sign(c.x - b.x) * -400, -800, { force: true, by: 'tornado' });
           s.rag?.kick(0, 0);
           if (Math.random() < 0.4) g.brain.say(pick(['WHOAAA!', 'I\'m getting dizzy!', 'Put me dooown!']), true);
         }
@@ -269,7 +269,7 @@ export function makeItem(game, obj, kind, info, owner = 'user') {
         if (owner !== 'user' || hitOnce) return;
         let near = Infinity;
         for (const p of b.worldPts()) near = Math.min(near, g.stick.distTo(p.x, p.y));
-        if (near < 22) { hitOnce = true; g.stick.hurt(10, dir * 950, -550, { force: true }); }
+        if (near < 22) { hitOnce = true; g.stick.hurt(10, dir * 950, -550, { force: true, by: 'wave' }); }
       };
       break;
     }

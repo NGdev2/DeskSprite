@@ -586,18 +586,19 @@ export class Brain {
     // steal a drawn weapon lying around
     if (!s.weapon) {
       const w = g.objects.find((o) => o.kind === 'drawn' && o.isStick && !o.heldBy && !o.dead && o.owner === 'user' && dist(o.body.x, o.body.y, s.x, s.y) < 420);
-      if (w && chance(0.6)) return this.goGrab(w);
+      if (w && chance(0.6)) { g.noteMove('stick', 'steal'); return this.goGrab(w); }
     }
 
+    // n names the move for the fight report
     const options = [];
     if (ally && dist(ally.center.x, ally.center.y, c.x, c.y) < 70) options.push({ n: 'melee', w: 40, f: () => this.melee(this.appTarget(ally)) });
     if (dCur < 95 + P.reach) options.push({ n: 'melee', w: 45, f: () => this.melee(this.cursorTgt()) });
     if (s.weapon) {
-      options.push({ w: 30, f: () => this.weaponAttack(dCur < 140 ? this.cursorTgt() : ally && dist(ally.center.x, ally.center.y, c.x, c.y) < 140 ? this.appTarget(ally) : null) });
-      options.push({ w: 8, f: () => this.throwWeapon() });
+      options.push({ n: 'slash', w: 30, f: () => this.weaponAttack(dCur < 140 ? this.cursorTgt() : ally && dist(ally.center.x, ally.center.y, c.x, c.y) < 140 ? this.appTarget(ally) : null) });
+      options.push({ n: 'throwWeapon', w: 8, f: () => this.throwWeapon() });
     }
-    options.push({ w: 14, f: () => this.approach(cur) });
-    if (this.blastCd <= 0) options.push({ w: 22 + lvl * 3, f: () => this.blast() });
+    options.push({ n: 'approach', w: 14, f: () => this.approach(cur) });
+    if (this.blastCd <= 0) options.push({ n: 'blast', w: 22 + lvl * 3, f: () => this.blast() });
     const throwable = this.findThrowable();
     if (throwable) options.push({ n: 'throw', w: 18, f: () => this.throwThing(throwable) });
     if (!s.weapon && this.drawCd <= 0 && lvl >= 2) options.push({ n: 'drawWeapon', w: 14, f: () => this.drawWeapon() });
@@ -730,7 +731,7 @@ export class Brain {
   // ---- targets: something that can be hit by a fist or weapon at point x,y
   cursorTgt() {
     const g = this.g;
-    return { get x() { return g.pointer.x; }, get y() { return g.pointer.y; }, hit: (d, vx, vy) => g.hitCursor(d, g.pointer.x, g.pointer.y, true), kind: 'cursor' };
+    return { get x() { return g.pointer.x; }, get y() { return g.pointer.y; }, hit: (d, vx, vy, by) => g.hitCursor(d, g.pointer.x, g.pointer.y, true, by), kind: 'cursor' };
   }
   appTarget(a) {
     return { get x() { return a.center.x; }, get y() { return a.center.y; }, hit: (d, vx, vy) => a.hurt(d, vx, vy), kind: 'app', app: a };
@@ -845,7 +846,7 @@ export class Brain {
           if (dist(p.x, p.y, tg.x, tg.y) < reach) {
             A.fired.hit = true;
             g.sfx('hit');
-            tg.hit(dmg, s.dir * (kind === 'uppercut' ? 200 : 450), kind === 'uppercut' ? -650 : -200);
+            tg.hit(dmg, s.dir * (kind === 'uppercut' ? 200 : 450), kind === 'uppercut' ? -650 : -200, kind);
           }
         }
       },

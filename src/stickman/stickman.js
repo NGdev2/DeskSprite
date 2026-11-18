@@ -133,9 +133,11 @@ export class Stickman {
 
   hurt(dmg, vx = 0, vy = 0, src = {}) {
     if (this.st.invuln > 0 && !src.force) return false;
-    // your apps hit softer than you do. It's your fight, they just help
-    if (src.app || src.obj?.owner === 'ally') dmg *= 0.6;
-    this.hp = Math.max(0, this.hp - dmg);
+    // apps help, but it's your fight: their hits count 60% (times their tier)
+    if (src.app) dmg *= 0.6 * (src.app.dmgMul || 1);
+    else if (src.obj?.owner === 'ally') dmg *= 0.6;
+    if (this.g.mode === 'fight') dmg *= (1 - (this.g.power?.armor || 0)) * this.g.paceIn();
+    this.hp = Math.max(this.g.koFloor?.() || 0, this.hp - dmg);
     this.st.invuln = src.invuln ?? 0.25;
     const c = this.center;
     this.g.fx.popText(c.x, c.y - 40, `-${Math.round(dmg)}`, '#ffd166', 16);

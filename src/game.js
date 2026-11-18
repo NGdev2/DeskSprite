@@ -62,6 +62,10 @@ export class Game {
     this.frontSince = 0;
     this.myTears = new Set();
     this.scraps = [];
+    this.cleanup = new Cleanup(this);
+    this.fightLevel = null;     // a test fight can override his level without changing his stats
+    this.power = power(this.stats.level);
+    this.report = null;
     this.resize();
   }
 
@@ -194,7 +198,7 @@ export class Game {
   // Temporary apps (a Binny called in to clean up) are never saved. During an exhibition the
   // roster saved is the one from before the fight.
   save() {
-    this.stats.apps = this.apps.filter((a) => !a.dead).map((a) => a.kind);
+    this.stats.apps = this.rosterLock ? this.rosterLock.slice() : this.apps.filter((a) => !a.dead && !a.temp).map((a) => a.kind);
     this.ctx.shared.set('stats', this.stats);
   }
 
@@ -497,15 +501,27 @@ export class Game {
     this.brain.onPet();
   }
 
-  startFight() {
+  // opts.autopilot: the autopilot plays your side (an exhibition: no wins, losses or XP).
+  // opts.level: fight at another level for testing (his stats keep their real level).
+  startFight(opts = {}) {
     this.wake();
     if (this.mode !== 'chill') return; // also not while the last fight is still wrapping up
     this.brain.cancelChallenge();
     this.cleanup.cancel();
     this.mode = 'fight';
     const S = this.stats;
-    S.fights++;
-    this.stick.maxHp = 100 + (S.level - 1) * 15;
+    this.exhibition = !!opts.autopilot || !!opts.level;
+    // an exhibition leaves saved state alone: freeze the saved roster and put it back afterwards
+    this.rosterLock = this.exhibition ? this.apps.filter((a) => !a.dead && !a.temp).map((a) => a.kind) : null;
+    if (!this.exhibition) S.fights++;
+    this.fightLevel = opts.level ? clamp(Math.round(+opts.level) || 1, 1, 9) : null;
+    this.power = power(this.level);
+    // a fresh fight: no ultimate charge, no cooldowns or threats left over from the last one
+    Object.assign(this.brain, { ult: 0, beam: null, storm: false, threat: null, lastPtr: null, cursorVel: null, levT: 0,
+      blastCd: 3, possessCd: 12, popupCd: 8, drawCd: 4, dodgeCd: 0, poundCd: this.t, teleCd: this.t, copyCd: this.t, levCd: this.t });
+    this.report = { level: this.level, autopilot: !!opts.autopilot, winner: null, duration: null, dmgToStick: 0, dmgToDesk: 0, dmgBy: {}, deskBy: {}, moves: { stick: {}, player: {}, ally: {} } };
+    for (const a of this.apps) a.applyTier(tierOf(a.kind, this.level));
+    this.stick.maxHp = this.power.hp;
     this.stick.hp = this.stick.maxHp;
     this.stick.stance = 'guard';
     this.stick.sitting = false;
@@ -516,7 +532,8 @@ export class Game {
     this.ink = this.maxInk;
     this.fightT = 0;
     this.hit.setInteractive(false);
-    this.arena = new Arena(this);
+    this.arena = new Arena(this, { autopilot: !!opts.autopilot });
+    if (this.sheet) this.setFightFront(true);
     this.ctx.host.focus?.().catch(() => {});
     // the "snapshot": copies of desktop files appear so they can be smashed safely
     this.fx.flash(0.6, '#ffffff');
@@ -530,7 +547,7 @@ export class Game {
       }
     }
     const allies = this.apps.filter((a) => a.alive).length;
-    for (let i = allies; i < 2; i++) this.after(600 + i * 700, () => this.summonApp(null, rand(100, this.w - 100)));
+    if (!opts.noAllies) for (let i = allies; i < 2; i++) this.after(600 + i * 700, () => this.mode === 'fight' && this.summonApp(null, rand(100, this.w - 100)));
     this.say(this.stick, line('fightStart'), { force: true });
   }
 
@@ -539,19 +556,21 @@ export class Game {
     const S = this.stats;
     const s = this.stick;
     this.mode = 'ending';
+    this.arena?.auto?.stop();   // nothing held or half-drawn during the result screen
+    const r = this.report;
+    if (r) Object.assign(r, { winner, duration: this.fightT, stickEnd: Math.max(0, s.hp), deskEnd: this.deskHp, leftAtEnd: this.leftovers(true).length });
+    const ex = this.exhibition;
     if (winner === 'user') {
-      S.wins++;
-      this.addXp(30);
+      if (!ex) { S.wins++; this.addXp(30); }
       s.hp = 0;
       s.knock(s.dir * -200, -500);
       s.st.stun = 3;
       this.sfx('win');
       this.ctx.particles.burst({ preset: 'confetti', x: this.w / 2, y: this.h / 3, count: 120 });
       this.after(1200, () => this.say(s, line('lose'), { force: true }));
-      this.arena?.banner('YOU WIN', `${this.settings.name} gives up. Wins: ${S.wins} · Losses: ${S.losses}`);
+      this.arena?.banner(ex && !this.arena.tookOver ? 'AUTOPILOT WINS' : 'YOU WIN', ex ? `${this.settings.name} gives up. Exhibition fight: not counted.` : `${this.settings.name} gives up. Wins: ${S.wins} · Losses: ${S.losses}`);
     } else if (winner === 'stick') {
-      S.losses++;
-      this.addXp(20);
+      if (!ex) { S.losses++; this.addXp(20); }
       this.sfx('lose');
       s.cancelAction();
       s.play('cheer', 2.5);
@@ -561,9 +580,11 @@ export class Game {
       s.stance = null;
       this.say(s, pick(['Truce? Truce.', 'Fine, we\'ll finish this later.', 'Running away? Okay.']), { force: true });
     }
-    S.anger = 0;
-    S.fun = clamp(S.fun + 30, 0, 100);
-    this.save();
+    if (!ex) {
+      S.anger = 0;
+      S.fun = clamp(S.fun + 30, 0, 100);
+      this.save();
+    }
     this.after(winner === 'truce' ? 300 : 4200, () => this.cleanupFight());
   }
 
@@ -578,7 +599,13 @@ export class Game {
     this.brain.beam = null;
     this.sketches = [];
     this.timeScale = 1;
-    this.restoreDesktop(true);
+    this.fightLevel = null;
+    this.power = power(this.stats.level);
+    for (const a of this.apps) { a.applyTier(tierOf(a.kind, this.level)); a.scan = null; a.dashChain = 0; a.stormT = 0; }
+    if (this.exhibition) this.endExhibition();
+    // leftovers and up to 5 cracks become tickets: Binny (or fsck) cleans them up
+    const keep = this.cleanup.start();
+    this.restoreDesktop(true, keep);
     for (const a of this.apps) { a.possessed = 0; a.st.dance = 0; if (a.down > 0) a.down = 0.5; }
     this.objects = this.objects.filter((o) => o.kind !== 'popup');
     for (const o of this.objects) if (o.kind === 'file') o.life = 20;
@@ -588,9 +615,30 @@ export class Game {
     this.pointer = this.ctx.pointer?.() || this.pointer;
   }
 
-  restoreDesktop(all = false) {
-    this.fx.healCracks();
-    this.deskHp = Math.min(100, this.deskHp + (all ? 100 : 25));
+  // After an exhibition, allies summoned for it go home and apps it retired come back.
+  endExhibition() {
+    const roster = this.rosterLock || [];
+    this.rosterLock = null;
+    this.exhibition = false;
+    for (const a of this.apps.slice()) if (a.exhibit && !a.temp) this.removeApp(a);
+    this.restoreRoster(roster);
+  }
+
+  // Make the live apps match a saved list of kinds (summoning the missing ones quietly).
+  restoreRoster(kinds) {
+    const want = kinds.slice();
+    for (const a of this.apps.slice()) {
+      if (a.temp) continue;
+      const i = want.indexOf(a.kind);
+      if (i >= 0) want.splice(i, 1); else this.removeApp(a);
+    }
+    for (const k of want) this.summonApp(k, rand(80, this.w - 80), null, true, { noRetire: true });
+    this.save();
+  }
+
+  restoreDesktop(all = false, keepCracks = null) {
+    this.fx.healCracks(keepCracks);
+    this.deskHp = Math.min(100, this.deskHp + (all ? 100 : 15));
     for (const o of this.objects) if (o.kind === 'file' && o.broken) o.restore(this);
     if (all) this.projectiles = [];
   }
@@ -598,26 +646,47 @@ export class Game {
   // ---------------------------------------------------------------- combat rules
   cursorTarget() { return { x: this.pointer.x, y: this.pointer.y }; }
 
-  hitCursor(dmg, x, y, melee = false) {
+  hitCursor(dmg, x, y, melee = false, by = 'hit') {
     if (this.mode !== 'fight') return;
     const near = dist(this.pointer.x, this.pointer.y, x, y) < (melee ? 50 : 34);
     this.fx.crack(x, y, clamp(dmg / 10, 0.4, 1.6));
     this.fx.shake(near ? 9 : 4);
     this.sfx('crack');
     if (near) {
-      this.hitDesk(dmg, x, y, true);
+      this.hitDesk(dmg, x, y, true, by);
       this.fx.flash(0.25, '#ff2a2a');
     }
   }
 
-  hitDesk(dmg, x, y, already = false) {
+  hitDesk(dmg, x, y, already = false, by = 'hit') {
     if (this.mode !== 'fight') return;
-    this.deskHp = Math.max(0, this.deskHp - dmg);
+    dmg *= this.pace();
+    this.deskHp = Math.max(this.koFloor(), this.deskHp - dmg);
+    const r = this.report;
+    if (r) { r.dmgToDesk += dmg; r.deskBy[by] = (r.deskBy[by] || 0) + dmg; }
+    this.brain.onDealt?.(dmg);
     if (!already) { this.fx.crack(x, y, clamp(dmg / 10, 0.4, 1.4)); this.fx.shake(5); }
     this.fx.popText(x, y - 20, `-${Math.round(dmg)}`, '#ff6b6b', 16);
     if (this.deskHp < 40) this.fx.glitch(0.25);
     if (this.deskHp <= 0) this.endFight('stick');
   }
+
+  // Pacing, so a fight is never over in seconds: he warms up over the first 45 s, and a desk
+  // on its last legs (under 35) gets a comeback window where his hits land softer.
+  // After 100 s it's overtime: both sides hit harder (×2 by 130 s) and the comeback windows close.
+  pace() {
+    const ramp = Math.min(1, 0.45 + this.fightT / 80);
+    return ramp * (this.overtime() > 1 ? this.overtime() : this.deskHp < 35 ? this.comeback() : 1);
+  }
+  // The same for him: a soft opening, and a comeback window when he's under 30% hp.
+  paceIn() {
+    const ramp = Math.min(1, 0.45 + this.fightT / 80);
+    return ramp * (this.overtime() > 1 ? this.overtime() : this.stick.hp < this.stick.maxHp * 0.3 ? this.comeback() : 1);
+  }
+  comeback() { return this.fightT < 60 ? 0.5 : 0.8; }   // stronger early, so nobody is crushed in seconds
+  // Safety net under the pacing: no knockout in the first 45 s of a fight (hp stops at 1).
+  koFloor() { return this.mode === 'fight' && this.fightT < 45 ? 1 : 0; }
+  overtime() { return this.fightT > 100 ? 1 + (this.fightT - 100) / 30 : 1; }
 
   healDesk(n) { this.deskHp = Math.min(100, this.deskHp + n); }
 
@@ -632,7 +701,7 @@ export class Game {
     this.sfx('boom');
     if (owner === 'stick' && this.mode === 'fight') {
       const dp = dist(this.pointer.x, this.pointer.y, x, y);
-      if (dp < R) this.hitDesk(18 * (1 - dp / R) + 4, x, y, true);
+      if (dp < R) this.hitDesk(18 * (1 - dp / R) + 4, x, y, true, 'explosion');
     }
     const s = this.stick;
     const sc = s.center;
@@ -663,8 +732,15 @@ export class Game {
     }
   }
 
-  onStickHurt(dmg) {
+  onStickHurt(dmg, src = {}) {
     if (this.mode === 'fight') {
+      const r = this.report;
+      if (r) {
+        r.dmgToStick += dmg;
+        const by = src.app ? 'ally ' + src.app.kind : src.obj ? (typeof src.obj.item === 'string' ? src.obj.item : src.obj.kind) : src.by || 'other';
+        r.dmgBy[by] = (r.dmgBy[by] || 0) + dmg;
+      }
+      this.brain.onTaken?.(dmg);
       if (this.stick.hp <= 0) this.endFight('user');
       else if (chance(0.3)) this.brain.say(line('hurt'));
     }
@@ -674,7 +750,7 @@ export class Game {
     const s = this.stick;
     this.fx.dust(s.x, s.y, 6);
     if (dv > 1400) this.fx.shake(4);
-    if (this.mode === 'fight') s.hurt(clamp(dv / 110, 3, 22), 0, 0, { invuln: 0.35 });
+    if (this.mode === 'fight') s.hurt(clamp(dv / 110, 3, 22), 0, 0, { invuln: 0.35, by: 'impact' });
     else if (dv > 1500) { s.st.dizzy = 2; this.stats.anger = clamp(this.stats.anger + 4, 0, 100); }
   }
 
@@ -748,7 +824,7 @@ export class Game {
       if (p.owner === 'stick') {
         if (dist(p.x, p.y, this.pointer.x, this.pointer.y) < 24 + p.r) {
           p.dead = true;
-          this.hitCursor(p.dmg, p.x, p.y, true);
+          this.hitCursor(p.dmg, p.x, p.y, true, p.type);
           this.fx.sparks(p.x, p.y, '#ff8a1f', 14);
           continue;
         }
@@ -759,7 +835,7 @@ export class Game {
           // the shot hits the "screen" where you were
           p.dead = true;
           this.fx.sparks(p.x, p.y, '#ff8a1f', 12);
-          this.hitCursor(p.dmg * 0.5, p.x, p.y);
+          this.hitCursor(p.dmg * 0.5, p.x, p.y, false, p.type);
         }
       } else if (s.st.devoured <= 0 && s.distTo(p.x, p.y) < p.r) {
         p.dead = true;
@@ -771,7 +847,7 @@ export class Game {
   onMessage(data) {
     this.wake();
     if (!data || typeof data !== 'object') return;
-    if (data.cmd === 'fight') this.startFight();
+    if (data.cmd === 'fight') this.startFight({ autopilot: !!data.autopilot, level: data.level });
     else if (data.cmd === 'feed') this.feed();
     else if (data.cmd === 'summon') this.summonApp(data.kind || null);
     else if (data.cmd === 'trick' && this.mode === 'chill' && this.stick.onGround) {
@@ -782,6 +858,129 @@ export class Game {
     else if (data.cmd === 'pause') { this.paused = true; this.gx.clearRect(0, 0, this.canvas.width, this.canvas.height); }
     else if (data.cmd === 'resume') this.paused = false;
     else if (data.cmd === 'say' && data.text) this.say(this.stick, String(data.text).slice(0, 200), { force: true });
+  }
+
+  // ---------------------------------------------------------------- fight report & test helpers
+  noteMove(side, name) {
+    if (!this.report || this.mode !== 'fight') return;
+    const m = this.report.moves[side];
+    m[name] = (m[name] || 0) + 1;
+  }
+
+  // Fight leftovers: drawings, balls and text blocks that would otherwise stay on the desktop.
+  leftovers(atEnd = false) {
+    return this.objects.filter((o) => !o.dead && (o.cleanup || (atEnd && ['drawn', 'ball', 'textblock'].includes(o.kind) && (o.heldBy || o.life > 8))));
+  }
+
+  // window.__desksprite[id].fightReport(): stats of the current or last fight.
+  fightReport() {
+    const r = this.report;
+    if (!r) return null;
+    const r1 = (v) => Math.round(v * 10) / 10;
+    const kinds = (m) => Object.keys(m).length;
+    return {
+      level: r.level, autopilot: r.autopilot, mode: this.mode, winner: r.winner,
+      duration: r1(r.duration ?? this.fightT),
+      damage: { toStick: r1(r.dmgToStick), toDesk: r1(r.dmgToDesk), bySource: Object.fromEntries(Object.entries(r.dmgBy).map(([k, v]) => [k, r1(v)])), deskBySource: Object.fromEntries(Object.entries(r.deskBy).map(([k, v]) => [k, r1(v)])) },
+      end: { stickHp: Math.round(r.stickEnd ?? this.stick.hp), stickMaxHp: this.stick.maxHp, deskHp: Math.round(r.deskEnd ?? this.deskHp) },
+      moves: r.moves,
+      variety: { stick: kinds(r.moves.stick), player: kinds(r.moves.player), allies: kinds(r.moves.ally) },
+      aboveBottom200: Math.round(((r.highT || 0) / Math.max(1, r.duration ?? this.fightT)) * 100) / 100,
+      leftovers: { atEnd: r.leftAtEnd, now: this.leftovers().length, cracks: this.fx.cracks.filter((c) => !c.healing).length },
+      cleanup: this.cleanup.summary(),
+    };
+  }
+
+  // Test helper: run the game faster than real time, without painting. Resolves with the report.
+  fastForward(secs, chunk = 900) {
+    this.wake();
+    return new Promise((done) => {
+      let left = Math.round(secs * 60);
+      const step = () => {
+        this.ff = true;
+        try { for (let i = Math.min(chunk, left); i > 0; i--, left--) this.frame(1 / 60); } finally { this.ff = false; }
+        if (left > 0 && !this.ffStop) this.ctx.after(0, step);
+        else { this.ffStop = false; this.lastSig = null; done(this.fightReport()); }
+      };
+      step();
+    });
+  }
+
+  // Test helper: n autopilot fights at a level, each followed by 60 s of cleanup, in fast forward.
+  // Results land in this.benchResults (also returned). His saved stats are restored afterwards
+  // (the fast-forwarded chill time in between would otherwise feed and level him).
+  async bench(level = 3, runs = 3) {
+    const out = this.benchResults = [];
+    const saved = JSON.parse(JSON.stringify(this.stats));
+    const roster = this.apps.filter((a) => !a.dead && !a.temp).map((a) => a.kind);
+    try { await this.benchRuns(level, runs, out); } finally {
+      this.cleanup.cancel();
+      Object.assign(this.stats, saved);
+      this.restoreRoster(roster);   // also saves
+      this.deskHp = 100;
+    }
+    return out;
+  }
+
+  async benchRuns(level, runs, out) {
+    for (let i = 0; i < runs; i++) {
+      if (this.mode !== 'chill') await this.fastForward(10);
+      for (const a of this.apps.slice()) this.removeApp(a);   // same start every time: only the 2 starter allies
+      this.startFight({ autopilot: true, level });
+      for (let t = 0; t < 400 && this.mode === 'fight'; t += 5) await this.fastForward(5);
+      const rep = this.fightReport();
+      for (let t = 0; t < 70 && this.mode !== 'chill'; t += 1) await this.fastForward(1);
+      await this.fastForward(60);
+      out.push({ winner: rep.winner, duration: rep.duration, damage: rep.damage, end: rep.end, variety: rep.variety, moves: rep.moves, aboveBottom200: rep.aboveBottom200, leftoversAtEnd: rep.leftovers.atEnd, leftoversAfter60s: this.leftovers().length, cracksAfter60s: this.fx.cracks.filter((c) => !c.healing).length });
+    }
+  }
+
+  // Test helper: how hard one app hits. An exhibition at `level` with the autopilot off and
+  // only that app on the field, 250 px from him; desk and his hp are pinned so nobody loses.
+  // He doesn't possess it (with a single app that would measure possession, not the app).
+  // Resolves with the app's credited damage to him, its hp lost and how often it went down.
+  async duel(kind, level = 3, secs = 40) {
+    if (this.mode !== 'chill') return null;
+    this.startFight({ autopilot: true, level, noAllies: true });
+    this.arena.auto.stop();
+    this.arena.auto = null;
+    for (const a of this.apps.slice()) this.removeApp(a);
+    const s = this.stick;
+    const app = this.summonApp(kind, clamp(s.x + 250, 60, this.w - 60), null, true);
+    let hpLost = 0, downs = 0, wasDown = false, lastHp = app.hp;
+    for (let t = 0; t < secs && this.mode === 'fight'; t += 0.5) {
+      this.brain.possessCd = 99;
+      await this.fastForward(0.5);
+      this.deskHp = 100;
+      s.hp = s.maxHp;
+      if (app.hp < lastHp) hpLost += lastHp - app.hp;
+      lastHp = app.hp;
+      if (app.down > 0 && !wasDown) downs++;
+      wasDown = app.down > 0;
+    }
+    const dealt = this.report.dmgBy['ally ' + kind] || 0, tier = app.tier;
+    this.endFight('truce');
+    await this.fastForward(2);
+    return { kind, tier, level, dealt: Math.round(dealt), hpLost: Math.round(hpLost), maxHp: app.maxHp, downs };
+  }
+
+  // duel() for several apps × trials; results (with medians) land in this.duelResults.
+  async duels(kinds, level = 3, trials = 3) {
+    const roster = this.apps.filter((a) => !a.dead && !a.temp).map((a) => a.kind);
+    const saved = JSON.parse(JSON.stringify(this.stats));   // the chill time in between would feed and level him
+    const out = this.duelResults = [];
+    try {
+      for (const k of kinds) {
+        const runs = [];
+        for (let i = 0; i < trials; i++) runs.push(await this.duel(k, level));
+        const med = (f) => runs.map(f).sort((a, b) => a - b)[Math.floor(runs.length / 2)];
+        out.push({ kind: k, tier: runs[0]?.tier, dealt: runs.map((r) => r.dealt), median: med((r) => r.dealt), hpLost: med((r) => r.hpLost), maxHp: runs[0]?.maxHp, downs: runs.reduce((n, r) => n + r.downs, 0) });
+      }
+    } finally {
+      Object.assign(this.stats, saved);
+      this.restoreRoster(roster);   // also saves
+    }
+    return out;
   }
 
   // ---------------------------------------------------------------- loop
@@ -822,6 +1021,7 @@ export class Game {
     this.sketches = this.sketches.filter((k) => !k.done);
     this.fx.update(sdt);
     if (this.mode === 'fight') {
+      if (this.fightT <= 100 && this.fightT + dt > 100) this.arena?.toast('⏱ OVERTIME: every hit counts double soon!', 2600);
       this.fightT += dt;
       this.ink = Math.min(this.maxInk, this.ink + dt * 9);
     }
