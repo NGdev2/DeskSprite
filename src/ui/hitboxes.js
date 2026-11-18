@@ -11,6 +11,13 @@ export class Hitboxes {
     this.interactive = true;
     this.drag = null;
     this.clicks = [];
+    this.layer = 'back';
+  }
+
+  // apps and file copies (and so their bubbles) follow a fight to the front layer
+  setLayer(layer) {
+    this.layer = layer;
+    for (const [ent, el] of this.map) if (ent !== this.g.stick) el.setLayer?.(layer);
   }
 
   destroy() { for (const el of this.map.values()) el.remove(); this.map.clear(); }
@@ -21,7 +28,8 @@ export class Hitboxes {
   }
 
   make(entity, kind) {
-    const el = this.g.ctx.overlay.create({ interactive: this.interactive, className: `ds-hit ds-hit-${kind}` });
+    const layer = kind === 'stick' ? this.g.stick.layer || 'back' : this.layer;
+    const el = this.g.ctx.overlay.create({ interactive: this.interactive, className: `ds-hit ds-hit-${kind}`, layer });
     el.dataset.kind = kind;
     el.addEventListener('pointerdown', (e) => this.down(e, entity, kind, el));
     el.addEventListener('pointermove', (e) => this.move(e));

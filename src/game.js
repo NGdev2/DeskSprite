@@ -102,7 +102,8 @@ export class Game {
     ctx.on('sheet', (sheet) => {
       if (sheet && !this.sheet) this.sheetSince = performance.now();
       this.sheet = sheet;
-      if (!sheet && this.stick.layer === 'front') this.setStickLayer('back');  // the panel closed: drop onto the desktop
+      if (!sheet && this.stick.layer === 'front' && !this.fightFront) this.setStickLayer('back');  // the panel closed: drop onto the desktop
+      if (this.mode === 'fight' || this.mode === 'ending') this.setFightFront(!!sheet);
       this.wake();
     });
     ctx.on('ticket', ({ type, ticket }) => this.onTicket(type, ticket));
@@ -282,6 +283,20 @@ export class Game {
     if (layer === 'back' && s.plat?.kind === 'ledge') { s.mode = 'air'; s.vy = 0; }
     this.lastSig = null;
   }
+  // A fight while a widget is full screen happens in front of it: everything is painted on the
+  // front canvas, and he and the apps (their bubbles) move to the front layer until it ends.
+  setFightFront(on) {
+    if (!!this.fightFront === on) return;
+    this.fightFront = on;
+    this.arena?.el.classList.toggle('ds-sheet', on);   // HUD steps down below the host's exit-full-screen pill
+    this.hit.setLayer(on ? 'front' : 'back');
+    this.setStickLayer(on ? 'front' : 'back');
+    const clear = (cv, gx) => { gx.setTransform(1, 0, 0, 1, 0, 0); gx.clearRect(0, 0, cv.width, cv.height); };
+    clear(on ? this.canvas : this.canvasFront, on ? this.gx : this.gxFront);
+    this.frontDirty = !on;
+    this.lastSig = null;
+  }
+
   canTear() {
     const sheet = this.sheet, s = this.stick;
     const pref = this.settings.tear || 'sometimes';
@@ -612,6 +627,7 @@ export class Game {
     for (const o of this.objects) if (o.kind === 'file') o.life = 20;
     this.arena?.destroy();
     this.arena = null;
+    this.setFightFront(false);
     this.hit.setInteractive(true);
     this.pointer = this.ctx.pointer?.() || this.pointer;
   }
@@ -1068,7 +1084,7 @@ export class Game {
   }
 
   render() {
-    const gx = this.gx;
+    const gx = this.fightFront ? this.gxFront : this.gx;
     const { w, h } = this.size;
     gx.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
     gx.clearRect(0, 0, w, h);
@@ -1084,7 +1100,8 @@ export class Game {
       const n = Math.max(2, Math.ceil(k.pts.length * k.k));
       drawInk(gx, k.pts.slice(0, n), k.material);
     }
-    const front = this.stick.layer === 'front';
+    const front = this.stick.layer === 'front' && !this.fightFront;
+    if (this.fightFront) this.drawScraps(gx);
     if (!front) { this.brain.act?.draw?.(gx); this.stick.draw(gx); }
     if (this.dormant && this.stick.J && !front) {
       const [hx, hy] = this.stick.J.head;
@@ -1103,7 +1120,7 @@ export class Game {
     this.arena?.drawFront(gx);
     gx.restore();
     this.fx.drawScreen(gx, w, h);
-    this.renderFront(front, ox, oy);
+    if (!this.fightFront) this.renderFront(front, ox, oy);
   }
 
   // The front canvas holds him while he's in front of a sheet, plus fallen paper scraps.
