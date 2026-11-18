@@ -9,7 +9,7 @@ import { makeItem } from '../world/sketch.js';
 import { installTricks } from './tricks.js';
 import { installLayers } from './layers.js';
 import { GRAVITY } from '../world/physics.js';
-import { clamp, rand, pick, chance, weighted, sign, dist } from '../util.js';
+import { clamp, rand, pick, chance, weighted, sign, dist, lerp, segDist } from '../util.js';
 import { APPS } from '../actors/lore.js';
 
 const POPUPS = [
@@ -20,6 +20,33 @@ const POPUPS = [
   ['Update Required', 'Installing Stickman Pro 2.0… 3% complete.'],
   ['Low Disk Space', 'Not enough room for your ego. (This is fake.)'],
 ];
+
+// How strong he is in a fight at each level. Every level adds hp, armor, damage, decision speed,
+// dodging and reach; level 2+ charges an ultimate that gets bigger at 3 and 5.
+// Levels past 5 keep the level-5 numbers (plus a little hp). Level 1 hits a bit harder per move
+// because it has far fewer moves (no drawn weapons, possession, kicks, ground pound or ultimate):
+// tuned with game.bench() so win rates rise smoothly with level (DS-9).
+const HP = [430, 300, 300, 300, 310], ARMOR = [0.12, 0.12, 0.15, 0.17, 0.19], DMG = [1.7, 1.77, 1.82, 1.56, 1.72], ULT = [0, 1.2, 1.4, 1.4, 1.4];
+const DODGE = [0.6, 0.6, 0.62, 0.65, 0.72], CANCEL = [0, 0, 0, 0.15, 0.4];
+const HOMING = [1.0, 1.3, 1.6, 1.8, 2.0], DOUBLE = [0.3, 0.45, 0.6, 0.75, 0.9];
+export function power(lvl) {
+  const k = Math.max(0, lvl - 1), i = Math.min(4, k);
+  return {
+    hp: HP[i] + Math.max(0, k - 4) * 15,
+    armor: ARMOR[i],                        // share of incoming damage he shrugs off
+    dmg: DMG[i],
+    speed: 1 + k * 0.16,                    // decisions per second
+    dodge: DODGE[i],                        // chance to dodge a threat he sees
+    react: Math.max(0.08, 0.26 - k * 0.04), // seconds before he reacts
+    dodgeCd: Math.max(0.5, 1.3 - k * 0.15),
+    cancel: CANCEL[i],                      // chance to abort an attack to dodge (level 4+)
+    homing: HOMING[i],                      // how hard his blasts curve after your cursor (rad/s)
+    double: DOUBLE[i],                      // chance a blast volley has a second shot
+    reach: k * 5,                           // extra px on punches, slashes and flying kicks
+    getup: Math.max(0.2, 0.45 - k * 0.06),  // seconds lying still before getting up
+    ult: ULT[i],                            // ultimate charge per second
+  };
+}
 
 export class Brain {
   constructor(game, stick) {
@@ -36,7 +63,11 @@ export class Brain {
     this.statsCd = 5;
     this.challengeT = 0;
     this.lastHurt = 0;
+    this.ult = 0;
+    this.seen = new WeakSet();   // threats he already decided about
   }
+
+  dmg(n) { return n * (this.g.power?.dmg || 1); }
 
   get needs() { return this.g.stats; }
 
@@ -517,21 +548,34 @@ export class Brain {
   // ================================================================ fight
   fight(dt) {
     const s = this.s, g = this.g;
+    const P = g.power, lvl = g.level;
+    this.beamTick(dt);
+    // track how fast your cursor moves, for leading shots
+    const lp = this.lastPtr, cp = g.pointer;
+    if (lp && dt > 0) { const k = Math.min(1, dt * 8); this.cursorVel = { x: lerp((this.cursorVel?.x || 0), (cp.x - lp.x) / dt, k), y: lerp((this.cursorVel?.y || 0), (cp.y - lp.y) / dt, k) }; }
+    this.lastPtr = { x: cp.x, y: cp.y };
+    if (lvl >= 2 && !this.beam) this.ult = Math.min(100, this.ult + dt * P.ult);
+    // from level 3 he breaks out of cages and freezes early
+    if (lvl >= 3 && s.st.caged > 0) s.st.caged = Math.max(0, s.st.caged - dt * 0.3 * (lvl - 2));
+    if (lvl >= 3 && s.st.frozen > 0) s.st.frozen = Math.max(0, s.st.frozen - dt * 0.3 * (lvl - 2));
+    // an interrupted charge must not leave his aura lit
+    if (s.aura && !this.beam && !this.storm && s.action?.name !== 'charge') s.aura = null;
+    this.levitateTick(dt);
     if (s.disabled) return;
-    const lvl = g.stats.level;
 
-    this.dodge(lvl);
+    this.dodge();
 
     if (s.airPose === 'flyingKick' && s.mode === 'air') {
       const f = s.limb('f2');
-      const tg = this.targetAt(f.x, f.y, 26);
-      if (tg) { tg.hit(14, s.dir * 600, -200); s.airPose = 'fall'; g.fx.ring(f.x, f.y, 40); }
+      const tg = this.targetAt(f.x, f.y, 26 + P.reach * 1.5);
+      if (tg) { tg.hit(this.dmg(14), s.dir * 600, -200, 'flyingKick'); s.airPose = 'fall'; g.fx.ring(f.x, f.y, 40); }
     }
 
-    if (this.fightAct || s.busy || !s.onGround) return;
+    if (this.fightAct || s.busy || !s.onGround || this.beam) return;
     this.think -= dt;
     if (this.think > 0) return;
-    this.think = rand(0.25, 0.7) / (1 + lvl * 0.12);
+    this.think = rand(0.25, 0.7) / P.speed;
+    if (this.ult >= 100 && lvl >= 2 && g.fightT > 50) return this.ultimate();   // no ultimate in the opening
 
     const cur = g.cursorTarget();
     const ally = this.nearestAlly(500);
@@ -546,9 +590,8 @@ export class Brain {
     }
 
     const options = [];
-    // melee whatever is closest
-    if (ally && dist(ally.center.x, ally.center.y, c.x, c.y) < 70) options.push({ w: 40, f: () => this.melee(this.appTarget(ally)) });
-    if (dCur < 95) options.push({ w: 45, f: () => this.melee(this.cursorTgt()) });
+    if (ally && dist(ally.center.x, ally.center.y, c.x, c.y) < 70) options.push({ n: 'melee', w: 40, f: () => this.melee(this.appTarget(ally)) });
+    if (dCur < 95 + P.reach) options.push({ n: 'melee', w: 45, f: () => this.melee(this.cursorTgt()) });
     if (s.weapon) {
       options.push({ w: 30, f: () => this.weaponAttack(dCur < 140 ? this.cursorTgt() : ally && dist(ally.center.x, ally.center.y, c.x, c.y) < 140 ? this.appTarget(ally) : null) });
       options.push({ w: 8, f: () => this.throwWeapon() });
@@ -556,18 +599,132 @@ export class Brain {
     options.push({ w: 14, f: () => this.approach(cur) });
     if (this.blastCd <= 0) options.push({ w: 22 + lvl * 3, f: () => this.blast() });
     const throwable = this.findThrowable();
-    if (throwable) options.push({ w: 18, f: () => this.throwThing(throwable) });
-    if (!s.weapon && this.drawCd <= 0 && lvl >= 2) options.push({ w: 14, f: () => this.drawWeapon() });
-    if (ally && this.possessCd <= 0 && lvl >= 2 && g.apps.filter((a) => a.possessed > 0).length === 0) options.push({ w: 12, f: () => this.possess(ally) });
-    if (this.popupCd <= 0 && lvl >= 3 && g.objects.filter((o) => o.kind === 'popup').length < 3) options.push({ w: 10, f: () => this.popups() });
-    if (cur.y < s.y - 60 && dCur < 420 && lvl >= 2) options.push({ w: 12, f: () => this.flyingKick(cur) });
-    if (lvl >= 2 && g.t > (this.poundCd || 0) && dCur < 500) options.push({ w: 9, f: () => this.groundPound() });
-    if (lvl >= 3 && g.t > (this.teleCd || 0) && dCur > 250) options.push({ w: 9, f: () => this.teleportStrike() });
+    if (throwable) options.push({ n: 'throw', w: 18, f: () => this.throwThing(throwable) });
+    if (!s.weapon && this.drawCd <= 0 && lvl >= 2) options.push({ n: 'drawWeapon', w: 14, f: () => this.drawWeapon() });
+    if (ally && this.possessCd <= 0 && lvl >= 2 && g.apps.filter((a) => a.possessed > 0).length === 0) options.push({ n: 'possess', w: 12, f: () => this.possess(ally) });
+    if (this.popupCd <= 0 && lvl >= 3 && g.objects.filter((o) => o.kind === 'popup').length < 3) options.push({ n: 'popups', w: 10, f: () => this.popups() });
+    if (cur.y < s.y - 60 && dCur < 420 + P.reach * 8 && lvl >= 2) options.push({ n: 'flyingKick', w: 12 + lvl * 2, f: () => this.flyingKick(cur) });
+    if (lvl >= 2 && g.t > (this.poundCd || 0) && dCur < 500) options.push({ n: 'groundPound', w: 9 + lvl, f: () => this.groundPound() });
+    if (lvl >= 3 && g.t > (this.teleCd || 0) && dCur > 250) options.push({ n: 'teleport', w: 9 + lvl * 2, f: () => this.teleportStrike() });
     const file = g.objects.find((o) => o.kind === 'file' && !o.broken && dist(o.body.x, o.body.y, s.x, s.y) < 300);
-    if (file) options.push({ w: 8, f: () => this.smashFile(file) });
-    if (ally && dist(ally.center.x, ally.center.y, c.x, c.y) < 300) options.push({ w: 10, f: () => this.approach(ally.center, true) });
-    options.push({ w: 3, f: () => { s.play('taunt', 0.8); this.say(line('taunt'), true); } });
-    weighted(options)?.f();
+    if (file) options.push({ n: 'smashFile', w: 8, f: () => this.smashFile(file) });
+    if (ally && dist(ally.center.x, ally.center.y, c.x, c.y) < 300) options.push({ n: 'chaseApp', w: 10, f: () => this.approach(ally.center, true) });
+    // the heavy hitters draw his attention now and then (so a boss's extra hp actually matters)
+    const heavy = g.apps.find((a) => a.alive && a.possessed <= 0 && (a.tier === 'boss' || a.tier === 'strong') && dist(a.center.x, a.center.y, c.x, c.y) < 700);
+    if (heavy) options.push({ n: 'huntApp', w: heavy.tier === 'boss' ? 9 : 5, f: () => this.approach(heavy.center, true) });
+    options.push({ n: 'taunt', w: 3, f: () => { s.play('taunt', 0.8); this.say(line('taunt'), true); } });
+    // take the fight up the screen: float up and fight from the air, or perch on a widget
+    if (!(this.levT > 0) && g.t > (this.levCd || 0)) options.push({ n: 'levitate', w: 24 + lvl * 2, f: () => this.levitate() });
+    const perch = s.layer === 'back' ? pick(g.widgetPlatforms()) : null;
+    if (perch && s.platKey === 'floor') options.push({ n: 'perch', w: 8, f: () => { s.walkTo(rand(perch.x1 + 10, perch.x2 - 10), perch, true); this.think = rand(0.8, 1.4); } });
+    const o = weighted(options);
+    if (o) { g.noteMove('stick', o.n); o.f(); }
+  }
+
+  // Float a few hundred px up and keep fighting from the air (blasts, slashes, moving sideways).
+  levitate() {
+    const s = this.s, g = this.g;
+    this.levT = rand(10, 16);
+    this.levH = rand(230, 380) * s.scale;
+    this.levCd = g.t + this.levT + rand(2, 4);
+    if (chance(0.5)) this.say(pick(['Up here!', 'Gravity is optional.', 'Catch me if you can!']), true);
+    g.fx.dust(s.x, s.y, 8);
+  }
+
+  levitateTick(dt) {
+    const s = this.s;
+    if (!(this.levT > 0)) return;
+    this.levT -= dt;
+    if (s.ragdolled) { this.levT = 0; return; }   // a jump or dodge doesn't end it, a knockdown does
+    s.hover = lerp(s.hover, this.levT > 0.6 ? this.levH : 0, Math.min(1, dt * 3));
+    if (Math.random() < dt * 6) this.g.fx.burst(s.x, s.y - s.hover + 4, { count: 1, color: '#ffb36b', type: 'spark', speed: 40, life: 0.5, size: 2.5, gravity: 120 });
+  }
+
+  onDealt(dmg) { if (this.g.level >= 2) this.ult = Math.min(100, this.ult + dmg * 0.8); }
+  onTaken(dmg) { if (this.g.level >= 2) this.ult = Math.min(100, this.ult + dmg * 0.9); }
+
+  // The ultimate gets bigger with his level: an overcharged blast volley at 2, an ink storm
+  // from the sky at 3 (plus a quake at 4), and a sweeping energy beam at 5.
+  ultimate() {
+    const s = this.s, g = this.g, lvl = g.level;
+    this.ult = 0;
+    s.stop();
+    s.faceTo(g.pointer.x);
+    const name = lvl >= 5 ? 'finalBeam' : lvl >= 3 ? 'inkStorm' : 'overcharge';
+    g.noteMove('stick', 'ULT ' + name);
+    const title = { overcharge: 'OVERCHARGE', inkStorm: lvl >= 4 ? 'INK STORM + QUAKE' : 'INK STORM', finalBeam: 'FINAL FORM' }[name];
+    g.fx.popText(s.head.x, s.head.y - 40, '★ ' + title + ' ★', '#ffd166', 26);
+    g.arena?.flashUlt(title);
+    s.aura = name === 'finalBeam' ? '#ffffff' : '#ff3b1f';
+    g.fx.shake(6);
+    if (name === 'overcharge') {
+      this.say(pick(['OVERCHARGE!', 'Full power!']), true);
+      s.play('charge', 0.7, { onDone: () => { s.aura = null; for (let i = 0; i < 3; i++) g.after(i * 220, () => this.fireBlast(2.2)); } });
+    } else if (name === 'inkStorm') {
+      this.say(pick(['INK STORM!', 'Let it rain… ink!', 'Look up, Animator!']), true);
+      s.play('cast', 1.6, { hold: false });
+      const n = lvl >= 4 ? 10 : 7;
+      this.storm = true;
+      for (let i = 0; i < n; i++) {
+        g.after(250 + i * 150, () => {
+          if (g.mode !== 'fight') return;
+          const p = g.pointer;
+          const x = clamp(p.x + rand(-160, 160), 20, g.w - 20);
+          const a = Math.atan2(p.y - -20, p.x - x);
+          g.projectiles.push(new Projectile(x, -20, Math.cos(a) * 760, Math.sin(a) * 760, {
+            owner: 'stick', type: 'spike', dmg: this.dmg(6), r: 10, color: '#ff5a1f', aim: { x: p.x, y: p.y }, life: 2.4,
+          }));
+          g.sfx('whoosh');
+        });
+      }
+      g.after(250 + n * 150 + 200, () => { s.aura = null; this.storm = false; if (lvl >= 4 && g.mode === 'fight' && s.onGround && !s.disabled) this.groundPound(); });
+    } else {
+      this.say(pick(['FINAL FORM!', 'This isn\'t even my final… oh wait, it is.', 'KA… ME… STICK!']), true);
+      g.timeWarp(0.55, 1.1);
+      g.fx.ring(s.center.x, s.center.y, 160, 'rgba(255,255,255,0.9)', 0.9);
+      s.play('charge', 1.1, { onDone: () => {
+        const h = s.limb('h2');
+        this.beam = { t: 0, dur: 1.5, a: Math.atan2(g.pointer.y - h.y, g.pointer.x - h.x), tick: 0 };
+        s.play('cast', 1.5);
+        g.sfx('zap');
+      } });
+    }
+  }
+
+  // The final beam tracks your cursor, but it can only turn so fast: outrun it.
+  beamTick(dt) {
+    const b = this.beam;
+    if (!b) return;
+    const s = this.s, g = this.g;
+    b.t += dt;
+    if (b.t > b.dur || g.mode !== 'fight' || s.disabled) { this.beam = null; s.aura = null; return; }
+    const h = s.limb('h2');
+    const want = Math.atan2(g.pointer.y - h.y, g.pointer.x - h.x);
+    let d = want - b.a; d = Math.atan2(Math.sin(d), Math.cos(d));
+    b.a += clamp(d, -1.6 * dt, 1.6 * dt);
+    const L = Math.hypot(g.w, g.h);
+    b.x1 = h.x; b.y1 = h.y; b.x2 = h.x + Math.cos(b.a) * L; b.y2 = h.y + Math.sin(b.a) * L;
+    s.faceTo(b.x2);
+    g.fx.shake(4);
+    if ((b.tick -= dt) > 0) return;
+    b.tick = 0.2;
+    const near = segDistTo(g.pointer, b);
+    if (near < 36) g.hitCursor(this.dmg(4), g.pointer.x, g.pointer.y, true, 'beam');
+    else if (chance(0.4)) { const k = rand(0.3, 0.8); g.fx.crack(b.x1 + (b.x2 - b.x1) * k * 0.5, b.y1 + (b.y2 - b.y1) * k * 0.5, 0.5); }
+    for (const a of g.apps) if (a.alive && a.possessed <= 0 && segDistTo(a.center, b) < 30) a.hurt(this.dmg(3), Math.cos(b.a) * 300, -200);
+  }
+
+  drawFx(gx) {
+    const b = this.beam;
+    if (!b || b.x1 === undefined) return;
+    const k = Math.min(1, b.t * 6, (b.dur - b.t) * 4);
+    gx.save();
+    gx.lineCap = 'round';
+    for (const [w, c] of [[34, 'rgba(255,138,31,0.22)'], [18, 'rgba(255,200,90,0.75)'], [6, '#fff']]) {
+      gx.strokeStyle = c; gx.lineWidth = w * k;
+      gx.beginPath(); gx.moveTo(b.x1, b.y1); gx.lineTo(b.x2, b.y2); gx.stroke();
+    }
+    gx.restore();
   }
 
   // ---- targets: something that can be hit by a fist or weapon at point x,y
@@ -595,31 +752,74 @@ export class Brain {
     return best;
   }
 
-  dodge(lvl) {
-    const s = this.s, g = this.g;
-    if (this.dodgeCd > 0 || !s.onGround || s.busy) return;
+  // He sees a threat once, decides once (P.dodge), and reacts after P.react seconds.
+  // Higher levels see further, react sooner, cancel attacks to dodge (4+), blink away (3+)
+  // and sometimes catch a thrown stick right out of the air (4+).
+  dodge() {
+    const s = this.s, g = this.g, P = g.power, lvl = g.level;
     const c = s.center;
-    const threats = [];
+    const see = (t) => { if (this.seen.has(t)) return; this.seen.add(t); if (!this.threat && chance(P.dodge)) { this.threat = t; this.dodgeAt = g.t + P.react; this.threatCancel = chance(P.cancel); } };
     for (const o of g.objects) {
-      if (!o.body || o.heldBy || o.owner === 'stick') continue;
+      if (!o.body || o.heldBy || o.owner === 'stick' || o.dead) continue;
+      const d = dist(o.body.x, o.body.y, c.x, c.y);
+      if (o.kind === 'bomb' || o.item === 'tornado') {
+        // a lit bomb next to him gets a fresh look every half second
+        if (d < 190 && g.t - (o.seenAt || -9) > 0.5) { o.seenAt = g.t; this.seen.delete(o); see(o); }
+        continue;
+      }
       const v = o.body.speed();
       if (v < 350) continue;
       const tx = c.x - o.body.x, ty = c.y - o.body.y;
-      const d = Math.hypot(tx, ty);
-      if (d < 220 && (tx * o.body.vx + ty * o.body.vy) / (d * v) > 0.7) threats.push(o);
+      if (d < 220 + lvl * 30 && (tx * o.body.vx + ty * o.body.vy) / (d * v) > 0.7) see(o);
     }
     for (const p of g.projectiles) {
-      if (p.owner === 'stick') continue;
+      if (p.owner === 'stick' || p.dead) continue;
       const d = dist(p.x, p.y, c.x, c.y);
-      if (d < 160) threats.push(p);
+      if (d < 160 + lvl * 25 && (c.x - p.x) * p.vx + (c.y - p.y) * p.vy > 0) see(p);
     }
-    if (threats.length && chance(0.25 + lvl * 0.08)) {
-      this.dodgeCd = 1.2;
-      const t = threats[0];
-      const away = sign(c.x - (t.body ? t.body.x : t.x)) || 1;
-      s.jumpTo(clamp(s.x + away * 120, 20, g.w - 20), s.y, true);
-      if (chance(0.4)) this.say(pick(['Missed!', 'Too slow!', 'Nope!']));
+    // from level 3 he notices a lightning or bomb cursor hovering over him
+    const ar = g.arena;
+    if (lvl >= 3 && ar && (ar.tool === 'zap' || ar.tool === 'bomb') && ar.cd[ar.tool] <= 0 && dist(g.pointer.x, g.pointer.y, c.x, c.y) < 70) {
+      ar.hoverMark ||= {};
+      see(ar.hoverMark);
+    } else if (ar) ar.hoverMark = null;
+
+    const t = this.threat;
+    if (!t || g.t < this.dodgeAt) return;
+    if (this.dodgeCd > 0 || !s.onGround || s.disabled || (s.busy && !this.threatCancel)) { if (g.t > this.dodgeAt + 0.6) this.threat = null; return; }
+    this.threat = null;
+    if (t.dead) return;
+    this.dodgeCd = P.dodgeCd;
+    if (s.busy) s.cancelAction();
+    const tx = t.body ? t.body.x : t.x ?? g.pointer.x;
+    const away = sign(c.x - tx) || 1;
+    if (t.kind === 'drawn' && t.isStick && !s.weapon && lvl >= 4 && chance(0.3)) {
+      s.takeWeapon(t);
+      t.thrownAt = null;
+      g.noteMove('stick', 'catch');
+      this.say(pick(['Thanks for the spear!', 'Caught it!', 'Return to sender? Nah, I\'ll keep it.']), true);
+      return;
     }
+    if (t.kind === 'bomb' || t.item === 'tornado') {
+      s.walkTo(clamp(s.x + away * 240, 20, g.w - 20), s.plat, true);
+      g.noteMove('stick', 'dodge');
+      return;
+    }
+    if (lvl >= 3 && chance(0.35)) return this.blink(away);
+    s.jumpTo(clamp(s.x + away * 150, 20, g.w - 20), s.y - 70 * s.scale, true);
+    g.noteMove('stick', 'dodge');
+    if (chance(0.4)) this.say(pick(['Missed!', 'Too slow!', 'Nope!']));
+  }
+
+  blink(away) {
+    const s = this.s, g = this.g;
+    const pl = s.plat || g.floor;
+    g.noteMove('stick', 'blink');
+    g.fx.burst(s.center.x, s.center.y, { count: 10, color: 'rgba(60,60,70,0.7)', type: 'dust', speed: 140, life: 0.45, size: 8, gravity: -40 });
+    s.x = clamp(s.x + away * 170, pl.x1 + 8, pl.x2 - 8);
+    g.fx.burst(s.x, s.y - 40, { count: 10, color: 'rgba(60,60,70,0.7)', type: 'dust', speed: 140, life: 0.45, size: 8, gravity: -40 });
+    g.sfx('whoosh');
+    if (chance(0.4)) this.say(pick(['Blink!', 'Over here!', 'Can\'t touch this.']));
   }
 
   approach(p, run = true) {
@@ -636,12 +836,13 @@ export class Brain {
     const kind = forced || pick(['punch', 'punch', 'kick', 'uppercut']);
     const dur = kind === 'kick' ? 0.42 : 0.32;
     const limb = kind === 'kick' ? 'f2' : 'h2';
-    const dmg = { punch: 6, kick: 9, uppercut: 11 }[kind] + g.stats.level;
+    const dmg = this.dmg({ punch: 6, kick: 9, uppercut: 11 }[kind]);
+    const reach = 40 + (g.power?.reach || 0);
     s.play(kind, dur, {
       onUpdate: (A) => {
         if (A.k > 0.3 && !A.fired.hit) {
           const p = s.limb(limb);
-          if (dist(p.x, p.y, tg.x, tg.y) < 40) {
+          if (dist(p.x, p.y, tg.x, tg.y) < reach) {
             A.fired.hit = true;
             g.sfx('hit');
             tg.hit(dmg, s.dir * (kind === 'uppercut' ? 200 : 450), kind === 'uppercut' ? -650 : -200);
@@ -693,9 +894,9 @@ export class Brain {
       onUpdate: (A) => {
         if (A.k < 0.15 || A.k > 0.7 || A.fired.hit || !s.weapon) return;
         for (const p of s.weaponPts()) {
-          if (dist(p.x, p.y, tg.x, tg.y) < 26) {
+          if (dist(p.x, p.y, tg.x, tg.y) < 26 + (g.power?.reach || 0)) {
             A.fired.hit = true;
-            tg.hit(12 + g.stats.level + (mat === 'fire' ? 5 : 0), s.dir * 500, -300);
+            tg.hit(this.dmg(12 + (mat === 'fire' ? 5 : 0)), s.dir * 500, -300, 'slash');
             if (mat === 'fire') g.fx.embers(p.x, p.y, 10);
             break;
           }
@@ -768,7 +969,7 @@ export class Brain {
 
   blast() {
     const s = this.s, g = this.g;
-    this.blastCd = rand(3.5, 6) / (1 + g.stats.level * 0.1);
+    this.blastCd = rand(3.5, 6) / (1 + g.level * 0.12);
     s.stop();
     s.faceTo(g.pointer.x);
     s.aura = '#ff8a1f';
@@ -777,22 +978,30 @@ export class Brain {
       onUpdate: () => { const h = s.limb('h2'); if (chance(0.5)) g.fx.embers(h.x, h.y, 1); },
       onDone: () => {
         s.aura = null;
-        const n = g.stats.level >= 4 ? 2 : 1;
-        for (let i = 0; i < n; i++) {
-          g.after(i * 200, () => {
-            const h = s.limb('h2');
-            const p = g.pointer;
-            s.faceTo(p.x);
-            s.play('cast', 0.3);
-            const a = Math.atan2(p.y - h.y, p.x - h.x);
-            g.projectiles.push(new Projectile(h.x, h.y, Math.cos(a) * 640, Math.sin(a) * 640, {
-              owner: 'stick', type: 'blast', dmg: 9 + g.stats.level, r: 9, aim: { x: p.x, y: p.y },
-            }));
-            g.sfx('zap');
-          });
-        }
+        const n = chance(g.power.double) ? 2 : 1;
+        for (let i = 0; i < n; i++) g.after(i * 200, () => this.fireBlast(g.power.homing));
       },
     });
+  }
+
+  // His blasts curve after your cursor (turn: radians per second, more with every level).
+  fireBlast(turn = 0) {
+    const s = this.s, g = this.g;
+    if (g.mode !== 'fight') return;
+    const h = s.limb('h2');
+    const v = 640 + (g.level - 1) * 30;
+    // he leads his shots (aims where your cursor is heading), better with every level
+    const pv = this.cursorVel || { x: 0, y: 0 };
+    const lead = Math.min(0.5, dist(h.x, h.y, g.pointer.x, g.pointer.y) / v) * Math.min(1, 0.3 + (g.level - 1) * 0.35);
+    const p = { x: g.pointer.x + pv.x * lead, y: g.pointer.y + pv.y * lead };
+    s.faceTo(p.x);
+    s.play('cast', 0.3);
+    const a = Math.atan2(p.y - h.y, p.x - h.x);
+    g.projectiles.push(new Projectile(h.x, h.y, Math.cos(a) * v, Math.sin(a) * v, {
+      owner: 'stick', type: 'blast', dmg: this.dmg(10), r: 9, aim: turn ? null : { x: p.x, y: p.y },
+      target: turn ? () => g.pointer : null, turn,
+    }));
+    g.sfx('zap');
   }
 
   drawWeapon() {
@@ -800,7 +1009,7 @@ export class Brain {
     this.drawCd = rand(10, 16);
     this.say(line('drawing'), true);
     const kind = pick(['sword', 'spear', 'staff']);
-    const mat = g.stats.level >= 3 && chance(0.5) ? 'fire' : 'ink';
+    const mat = g.level >= 3 && chance(0.5) ? 'fire' : 'ink';
     const h = s.limb('h2');
     this.drawShape(kind, h.x, h.y, mat, (obj) => { s.takeWeapon(obj); });
   }
@@ -809,14 +1018,15 @@ export class Brain {
   onUserItem(kind) {
     const s = this.s, g = this.g;
     const map = { spear: 'spear', shuriken: 'star', rocket: 'triangle', lightning: 'zigzag', boomerang: 'vee', bow: 'arc', shield: 'ball' };
-    if (!map[kind] || g.stats.level < 2 || s.disabled || s.busy || !s.onGround || Math.random() > 0.3) return;
+    if (!map[kind] || g.level < 2 || s.disabled || s.busy || !s.onGround || Math.random() > 0.3) return;
     this.copyCd = this.copyCd || 0;
     if (g.t < this.copyCd) return;
     this.copyCd = g.t + 8;
     const h = s.limb('h2');
     this.say(pick(['Ooh, nice one. My turn!', 'Copycat time!', 'Two can play this game!']), true);
     const x = h.x + s.dir * 30, y = h.y - 40;
-    this.drawShape(map[kind], x, y, g.stats.level >= 3 && kind === 'spear' ? 'fire' : 'ink', (obj) => {
+    g.noteMove('stick', 'copycat');
+    this.drawShape(map[kind], x, y, g.level >= 3 && kind === 'spear' ? 'fire' : 'ink', (obj) => {
       makeItem(g, obj, kind, { radius: 34 }, 'stick');
     });
   }
@@ -830,7 +1040,7 @@ export class Brain {
       if (!app.alive) return;
       const h = s.limb('h2');
       g.fx.beam(h.x, h.y, app.center.x, app.center.y, '#9d4edd', 0.6, 5);
-      app.possess(8 + g.stats.level);
+      app.possess(8 + g.level);
     } });
   }
 
@@ -838,7 +1048,7 @@ export class Brain {
     const g = this.g, s = this.s;
     this.popupCd = rand(12, 18);
     s.play('laugh', 0.8);
-    const n = Math.min(3, 1 + Math.floor(g.stats.level / 2));
+    const n = Math.min(3, 1 + Math.floor(g.level / 2));
     for (let i = 0; i < n; i++) {
       g.after(i * 350, () => {
         const [t, m] = pick(POPUPS);
@@ -872,7 +1082,7 @@ export class Brain {
       g.after(150, () => {
         f.knock(s.dir * 300, -500);
         f.damage(g, 2);
-        if (f.broken) g.hitDesk(4, b.x, b.y);
+        if (f.broken) g.hitDesk(this.dmg(4), b.x, b.y, false, 'smashFile');
       });
       return true;
     }, { max: 6 });
@@ -880,6 +1090,8 @@ export class Brain {
   }
 }
 
+
+const segDistTo = (p, b) => segDist(p.x, p.y, b.x1, b.y1, b.x2, b.y2).d;
 
 installTricks(Brain);
 installLayers(Brain);

@@ -444,6 +444,7 @@ export class Projectile {
     this.dead = false;
     this.t = 0;
     this.target = opts.target || null; // homing target {x,y} getter
+    this.turn = opts.turn ?? 3;        // homing turn rate, rad/s
     this.aim = opts.aim || null;       // where a stick shot "hits the screen"
   }
   update(dt, g) {
@@ -456,13 +457,13 @@ export class Projectile {
         const s = Math.hypot(this.vx, this.vy);
         const cur = Math.atan2(this.vy, this.vx);
         let d = a - cur; d = Math.atan2(Math.sin(d), Math.cos(d));
-        const na = cur + clamp(d, -3 * dt, 3 * dt);
+        const na = cur + clamp(d, -this.turn * dt, this.turn * dt);
         this.vx = Math.cos(na) * s; this.vy = Math.sin(na) * s;
       }
     }
     this.vy += this.gravity * dt;
     this.x += this.vx * dt; this.y += this.vy * dt;
-    if (this.type === 'blast' && Math.random() < 0.7) g.fx.embers(this.x, this.y, 1);
+    if ((this.type === 'blast' || this.type === 'spike') && Math.random() < 0.7) g.fx.embers(this.x, this.y, 1);
     if (this.life <= 0 || this.x < -50 || this.x > g.w + 50 || this.y > g.h + 50 || this.y < -200) this.dead = true;
   }
   draw(gx) {
@@ -488,6 +489,14 @@ export class Projectile {
       gx.beginPath(); gx.moveTo(4, 0); gx.lineTo(-4, -4); gx.lineTo(-4, 4); gx.closePath(); gx.fill();
       gx.strokeStyle = '#e63946'; gx.lineWidth = 2;
       gx.beginPath(); gx.moveTo(-22, 0); gx.lineTo(-27, -4); gx.moveTo(-22, 0); gx.lineTo(-27, 4); gx.stroke();
+    } else if (this.type === 'spike') {
+      const a = Math.atan2(this.vy, this.vx);
+      gx.translate(this.x, this.y); gx.rotate(a);
+      gx.lineCap = 'round';
+      for (const [w, c] of [[10, 'rgba(255,90,31,0.3)'], [5, this.color], [1.6, '#fff']]) {
+        gx.strokeStyle = c; gx.lineWidth = w;
+        gx.beginPath(); gx.moveTo(-26, 0); gx.lineTo(6, 0); gx.stroke();
+      }
     } else if (this.type === 'beam') {
       gx.strokeStyle = this.color; gx.lineWidth = 4; gx.shadowColor = this.color; gx.shadowBlur = 10;
       gx.beginPath(); gx.moveTo(this.x, this.y); gx.lineTo(this.x - this.vx * 0.04, this.y - this.vy * 0.04); gx.stroke();

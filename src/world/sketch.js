@@ -159,7 +159,7 @@ export function makeItem(game, obj, kind, info, owner = 'user') {
       const [vx, vy, a] = aimVel(1150);
       b.vx = vx; b.vy = vy; alignTo(a);
       b.gravityScale = 0.1;
-      obj.dmgMul = 1.6;
+      obj.dmgMul = 1.35;
       markThrown(2);
       obj.ai = (dt) => { T += dt; if (T > 1.1) b.gravityScale = 1; };
       break;
@@ -284,7 +284,7 @@ export function makeItem(game, obj, kind, info, owner = 'user') {
           obj.shot = 0.5;
           const a = Math.atan2(t.y - b.y, t.x - b.x);
           g.projectiles.push(new Projectile(b.x, b.y, Math.cos(a) * 950, Math.sin(a) * 950 - 80, {
-            owner: owner === 'user' ? 'ally' : 'stick', type: 'arrow', dmg: 6, r: 8, gravity: 160, color: '#5a3b1c',
+            owner: owner === 'user' ? 'ally' : 'stick', type: 'arrow', dmg: 4, r: 8, gravity: 160, color: '#5a3b1c',
             aim: owner === 'user' ? null : { x: t.x, y: t.y },
           }));
           g.sfx('whoosh');

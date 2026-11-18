@@ -190,7 +190,8 @@ export class Stickman {
       const hip = this.rag.p.hip;
       this.x = hip.x; this.y = hip.y + this.legLen;
       this.J = this.rag.joints();
-      if (this.rag.rest > 0.45 && !this.rag.pin && this.st.stun <= 0) this.startGetup();
+      const getup = g.mode === 'fight' ? g.power?.getup ?? 0.45 : 0.45;
+      if (this.rag.rest > getup && !this.rag.pin && this.st.stun <= 0) this.startGetup();
       if (hip.y > g.h + 300) this.respawn();
       this.updateWeapon();
       return;

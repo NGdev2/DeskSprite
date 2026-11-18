@@ -4,7 +4,7 @@
 // SAFETY: this module never writes files, never launches apps and never runs commands.
 // Desktop files and apps are read once (names and icons only) to make visual copies.
 import { Stickman } from './stickman/stickman.js';
-import { Brain } from './stickman/brain.js';
+import { Brain, power } from './stickman/brain.js';
 import { AppActor } from './actors/app.js';
 import { ARCHETYPES, archetypeFor } from './actors/art.js';
 import { line } from './actors/lore.js';
@@ -65,6 +65,7 @@ export class Game {
     this.resize();
   }
 
+  get level() { return this.fightLevel || this.stats.level; }
   get w() { return this.size.w; }
   get h() { return this.size.h; }
   get world() { return this.worldRef; }
@@ -639,7 +640,7 @@ export class Game {
     if (ds < R) {
       const f = 1 - ds / R;
       const a = Math.atan2(sc.y - y, sc.x - x);
-      if (this.mode === 'fight' && owner !== 'stick') s.hurt(30 * f + 5, Math.cos(a) * 1400 * f, Math.sin(a) * 1400 * f - 500, { force: true });
+      if (this.mode === 'fight' && owner !== 'stick') s.hurt(22 * f + 5, Math.cos(a) * 1400 * f, Math.sin(a) * 1400 * f - 500, { force: true, by: 'explosion' });
       else s.knock(Math.cos(a) * 1200 * f, Math.sin(a) * 1200 * f - 400);
     }
     for (const o of this.objects) {
@@ -693,7 +694,7 @@ export class Game {
         // his throws aim at your cursor and your apps
         if (fighting && dist(b.x, b.y, this.pointer.x, this.pointer.y) < 36 + (b.radius || 0) * 0.5) {
           o.hitCd = 0.5;
-          this.hitCursor(o.kind === 'file' ? 10 : 8, this.pointer.x, this.pointer.y, true);
+          this.hitCursor((o.kind === 'file' ? 10 : 8) * this.power.dmg, this.pointer.x, this.pointer.y, true, 'throw');
           if (o.kind === 'file') o.shatter(this);
           o.thrownAt = null;
           b.vx *= -0.3; b.vy = -200;
@@ -883,6 +884,7 @@ export class Game {
     }
     if (this.stick.weapon && !front) this.stick.weapon.draw(gx);
     for (const p of this.projectiles) p.draw(gx);
+    this.brain.drawFx?.(gx);
     this.fx.drawFront(gx);
     for (const o of this.objects) if (o.kind === 'popup') o.draw(gx, this);
     this.arena?.drawFront(gx);

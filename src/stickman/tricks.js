@@ -403,15 +403,17 @@ const tricks = {
     g.fx.shake(14);
     g.sfx('boom');
     g.fx.burst(x, y, { count: 16, color: ['#8d6e63', '#a1887f'], type: 'debris', speed: 420, life: 1.2, size: 5, gravity: 1300, spread: 1.2 });
+    if (g.mode !== 'fight') return;
+    const R = 230 + (g.level - 1) * 20;   // the shockwave grows with his level
     for (const a of g.apps) {
       const c = a.center;
       const d = dist(c.x, c.y, x, y);
-      if (d < 230 && a.possessed <= 0) a.hurt(10 * (1 - d / 230) + 3, sign(c.x - x) * 500, -600);
+      if (d < R && a.possessed <= 0) a.hurt(this.dmg(10 * (1 - d / R) + 3), sign(c.x - x) * 500, -600);
     }
     for (const o of g.objects) {
       if (o.kind === 'file' && !o.broken && dist(o.body.x, o.body.y, x, y) < 230) { o.knock(sign(o.body.x - x) * 300, -650); o.damage(g, 1); }
     }
-    if (dist(g.pointer.x, g.pointer.y, x, y) < 220) g.hitDesk(10, x, y - 10);
+    if (dist(g.pointer.x, g.pointer.y, x, y) < R - 10) g.hitDesk(this.dmg(10), x, y - 10, false, 'groundPound');
     else g.fx.crack(x, y - 6, 0.7);
   },
 
@@ -425,7 +427,7 @@ const tricks = {
     s.stop();
     s.st.stun = 0.4;
     this.say(pick(['Behind you!', 'Nothing personal.', 'Blink!']), true);
-    g.after(380, () => {
+    g.after(Math.max(200, 380 - (g.level - 3) * 60), () => {
       if (g.mode !== 'fight') { s.alpha = 1; return; }
       const p = g.pointer;
       const pl = g.platformUnderPoint(p.x, p.y);
