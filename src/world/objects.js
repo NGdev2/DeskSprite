@@ -393,6 +393,7 @@ export class Popup extends Thing {
     const b = this.body, w = this.pw, h = this.ph;
     const pop = clamp(this.t * 6, 0, 1);
     gx.save(); gx.translate(b.x, b.y); gx.rotate(b.a); gx.scale(pop, pop);
+    gx.textAlign = 'left'; gx.textBaseline = 'alphabetic';
     if (this.life < 1) gx.globalAlpha = this.life;
     gx.shadowColor = 'rgba(0,0,0,0.35)'; gx.shadowBlur = 18; gx.shadowOffsetY = 6;
     gx.fillStyle = '#f2f2f5';

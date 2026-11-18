@@ -654,7 +654,8 @@ export class AppActor {
       gx.fillText('*munch*', 0, -SIZE - 6);
     }
     gx.restore();
-    if (g.mode === 'fight' && this.hp < this.maxHp && this.down <= 0) {
+    gx.save();   // the labels below set font and alignment: keep that out of later draws
+    if (g.mode === 'fight' && this.down <= 0) {
       const w = 36, x = c.x - w / 2, y = c.y - SIZE / 2 - 22;
       if (this.hp < this.maxHp) {
         gx.fillStyle = 'rgba(0,0,0,0.45)'; gx.fillRect(x, y, w, 4);
