@@ -165,29 +165,31 @@ export class AppActor {
     this.y = pl.y; this.platKey = pl.key; this.lastX1 = pl.x1;
 
     if (this.down > 0 || this.st.stun > 0) return;
-    if (g.mode === 'fight' && (this.possessed > 0 || g.engaged.has(this))) this.fightThink(dt, pl);
+    if (this.job && g.mode !== 'fight') this.cleanThink(dt, pl);
+    else if (g.mode === 'fight' && (this.possessed > 0 || g.engaged.has(this))) this.fightThink(dt, pl);
     else this.chillThink(dt, pl);
     if (g.mode === 'fight' && !g.engaged.has(this) && this.possessed <= 0 && chance(dt * 0.15)) {
       this.say(pick(['Go go go!', 'You can do it, Animator!', 'Get him!', 'I\'m on standby!', 'Tag me in!']));
     }
 
     let moving = false;
+    const speed = this.speed * (this.job ? 2.6 : 1);   // Binny hurries to the mess
     if (this.goal) {
       const gp = this.goal.key ? g.platformByKey(this.goal.key) : null;
       if (gp && gp.key !== pl.key) {
         const tx = clamp(this.goal.x, gp.x1 + 10, gp.x2 - 10);
         if (Math.abs(tx - this.x) < 200 || this.x <= pl.x1 + 6 || this.x >= pl.x2 - 6) this.jump(tx, gp.y);
-        else { this.dir = sign(tx - this.x); this.x += this.dir * this.speed * dt; moving = true; }
+        else { this.dir = sign(tx - this.x); this.x += this.dir * speed * dt; moving = true; }
       } else {
         const tx = clamp(this.goal.x, pl.x1 + 10, pl.x2 - 10);
         if (Math.abs(tx - this.x) > 4) {
           this.dir = sign(tx - this.x);
-          this.x += this.dir * Math.min(Math.abs(tx - this.x), this.speed * dt * (this.st.dance > 0 ? 0.3 : 1));
+          this.x += this.dir * Math.min(Math.abs(tx - this.x), speed * dt * (this.st.dance > 0 ? 0.3 : 1));
           moving = true;
         } else this.goal = null;
       }
     }
-    if (moving) this.phase = (this.phase + dt * this.speed / 26) % 1;
+    if (moving) this.phase = (this.phase + dt * speed / 26) % 1;
   }
 
   jump(tx, ty) {
@@ -225,6 +227,19 @@ export class AppActor {
     if (this.kind === 'trash' && this.st.full <= 0) this.eatNearby(false);
   }
 
+  // After a fight Binny walks to a leftover (game.cleanup picks it) and eats it on arrival.
+  cleanThink(dt, pl) {
+    const g = this.g, o = this.job.o;
+    if (o.dead) { this.job = null; return; }
+    const b = o.body;
+    if (Math.abs(b.x - this.x) < 42 && Math.abs(b.y - (this.y - 22)) < 70) { g.cleanup.eat(this, this.job); return; }
+    if (b.sleep < 0.3 && b.speed() > 60 && this.jobT < 10) return;   // wait until it lands
+    if (!this.goal || Math.abs(this.goal.x - b.x) > 20) {
+      const tp = g.platformUnderPoint(b.x, b.y + 10);
+      this.walkTo(b.x, tp && tp.key !== pl.key ? tp : null);
+    }
+  }
+
   // two of your apps gossiping
   chatWith(b) {
     const g = this.g;
@@ -245,6 +260,7 @@ export class AppActor {
     for (const o of g.objects) {
       if (o.dead || !o.body || o.heldBy || o.kind === 'file' || o.kind === 'popup') continue;
       if (fightOnly && o.owner !== 'stick') continue;
+      if (o.cleanup) continue;   // reserved for the post-fight cleanup
       if (o.kind === 'drawn' && o.owner === 'user' && !fightOnly && g.mode !== 'fight' && o.body.sleep < 0.5) continue;
       if (dist(o.body.x, o.body.y, this.x, this.y - 20) < 40) {
         o.dead = true;

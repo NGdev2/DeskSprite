@@ -14,6 +14,7 @@ import { FileCopy, Ball, Cookie, drawInk, Projectile } from './world/objects.js'
 import { platformUnder } from './world/physics.js';
 import { Arena } from './ui/arena.js';
 import { Hitboxes } from './ui/hitboxes.js';
+import { Cleanup } from './world/cleanup.js';
 import { clamp, rand, pick, chance, dist, TAU } from './util.js';
 
 const DEFAULT_STATS = { energy: 85, fun: 70, food: 75, anger: 0, xp: 0, level: 1, wins: 0, losses: 0, fights: 0, bonds: {}, apps: [] };
@@ -154,7 +155,7 @@ export class Game {
     if (s.action?.name !== 'sleep' || this.brain.act?.name !== 'sleep' || this.brain.act.t < 3 || !s.onGround) return false;
     const fx = this.fx;
     if (fx.parts.length || fx.bolts.length || fx.beams.length || fx.rings.length || fx.texts.length || fx.shakeAmp || fx.flashA || fx.glitchT) return false;
-    if (this.projectiles.length || this.sketches.length || this.timers.length) return false;
+    if (this.projectiles.length || this.sketches.length || this.timers.length || this.cleanup.active) return false;
     if (this.objects.some((o) => o.body && !o.body.static && (o.body.sleep <= 0.6 || o.body.held) || o.kind === 'bomb' || o.kind === 'popup')) return false;
     if (this.apps.some((a) => a.mode !== 'ground' || a.goal || a.squash > 0.05 || a.spawnT < 1)) return false;
     return true;
@@ -189,6 +190,8 @@ export class Game {
     for (const b of this.bubbles.values()) b.close?.();
   }
 
+  // Temporary apps (a Binny called in to clean up) are never saved. During an exhibition the
+  // roster saved is the one from before the fight.
   save() {
     this.stats.apps = this.apps.filter((a) => !a.dead).map((a) => a.kind);
     this.ctx.shared.set('stats', this.stats);
@@ -311,7 +314,9 @@ export class Game {
         const app = pick(this.apps.filter((a) => a.alive));
         if (app && Math.random() < 0.7) this.after(1600, () => this.say(app, pick(['Someone opened a new tab in the WALL.', '$ ls ./hole → nothing. Classic.', 'Is that… daylight?', 'fsck is going to be so mad.'])));
       }
-    } else if (t.kind === 'orphan' && (type === 'resolve' || type === 'expire')) {
+    }
+    this.cleanup.onTicket(type, t);
+    if (t.kind === 'orphan' && (type === 'resolve' || type === 'expire')) {
       const before = this.scraps.length;
       this.scraps = this.scraps.filter((s) => s.id !== t.id);
       if (this.scraps.length !== before) this.lastSig = null;
@@ -400,11 +405,13 @@ export class Game {
     return this.pickAppKind(k);
   }
 
-  summonApp(kind = null, x = null, y = null, quiet = false) {
+  // opts.temp: a short visit (cleanup Binny) that neither counts against the cap nor gets saved.
+  // opts.noRetire: put a saved roster back without pushing anyone out.
+  summonApp(kind = null, x = null, y = null, quiet = false, opts = {}) {
     this.wake();
-    if (this.apps.length >= this.maxApps + (this.mode === 'fight' ? 2 : 0)) {
+    if (!opts.temp && !opts.noRetire && this.apps.filter((a) => !a.temp).length >= this.maxApps + (this.mode === 'fight' ? 2 : 0)) {
       // retire the oldest so the newcomer has room
-      const old = this.apps.find((a) => a.possessed <= 0);
+      const old = this.apps.find((a) => a.possessed <= 0 && !a.temp);
       if (old) this.removeApp(old);
     }
     const pk = this.pickAppKind(kind);
@@ -412,6 +419,8 @@ export class Game {
     const top = Math.max(10, (y ?? this.h) - 260);
     const app = new AppActor(this, pk.kind, x, top, pk.info);
     app.vy = 200;
+    app.temp = !!opts.temp;
+    if (this.mode === 'fight' && this.exhibition) app.exhibit = true;   // goes home after the exhibition
     this.apps.push(app);
     if (!quiet) {
       this.fx.bolt(x + rand(-30, 30), 0, x, (y ?? this.h) - 10);
@@ -491,6 +500,7 @@ export class Game {
     this.wake();
     if (this.mode !== 'chill') return; // also not while the last fight is still wrapping up
     this.brain.cancelChallenge();
+    this.cleanup.cancel();
     this.mode = 'fight';
     const S = this.stats;
     S.fights++;
@@ -560,7 +570,12 @@ export class Game {
     this.mode = 'chill';
     this.stick.stance = null;
     this.stick.aura = null;
+    this.stick.alpha = 1;
     this.stick.hp = this.stick.maxHp;
+    this.arena?.cancelInput();   // let go of him / drop a half-drawn stroke before the leftover snapshot
+    this.stick.dropWeapon();
+    this.brain.beam = null;
+    this.sketches = [];
     this.timeScale = 1;
     this.restoreDesktop(true);
     for (const a of this.apps) { a.possessed = 0; a.st.dance = 0; if (a.down > 0) a.down = 0.5; }

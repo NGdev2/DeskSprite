@@ -1,6 +1,8 @@
 // Canvas effects that live in the game layer: physical particles, glass cracks, lightning,
 // beams, shockwaves, screen shake and glitch bars. All of it is paint. Nothing real breaks.
-import { rand, pick, TAU, clamp } from '../util.js';
+import { rand, pick, TAU, clamp, nextId } from '../util.js';
+
+const MAX_CRACKS = 8;
 
 export class FX {
   constructor(game) {
@@ -48,7 +50,7 @@ export class FX {
     this.texts.push({ x, y, text, color, size, life: 1.1, max: 1.1, vy: -60 });
   }
 
-  // A radial "broken glass" crack at x,y. heal: seconds until it fades (null = until restore)
+  // A radial "broken glass" crack at x,y. Returns it; its id lets a repair ticket heal just this one.
   crack(x, y, power = 1) {
     const lines = [];
     const n = Math.round(6 + power * 5);
@@ -80,11 +82,22 @@ export class FX {
         rings.push([x + Math.cos(a1) * rr, y + Math.sin(a1) * rr, x + Math.cos(a2) * rr, y + Math.sin(a2) * rr, 0.6]);
       }
     }
-    this.cracks.push({ x, y, lines: lines.concat(rings), a: 1, healing: false, R });
+    const c = { id: nextId('crack'), x, y, lines: lines.concat(rings), a: 1, healing: false, R };
+    this.cracks.push(c);
+    // keep the screen readable: past 8 cracks the oldest fades away
+    const open = this.cracks.filter((k) => !k.healing && !k.ticket);
+    for (let i = 0; i < open.length - MAX_CRACKS; i++) { open[i].healing = true; open[i].fast = true; }
     if (this.cracks.length > 40) this.cracks.shift();
+    return c;
   }
 
-  healCracks() { for (const c of this.cracks) c.healing = true; }
+  // Heal every crack, except the ids in `keep` (those wait for a repair ticket).
+  healCracks(keep = null) { for (const c of this.cracks) if (!keep?.has(c.id)) c.healing = true; }
+  healCrack(id) {
+    const c = this.cracks.find((k) => k.id === id);
+    if (c) c.healing = true;
+    return !!c;
+  }
 
   bolt(x1, y1, x2, y2, color = '#cde8ff') {
     const pts = [[x1, y1]];
