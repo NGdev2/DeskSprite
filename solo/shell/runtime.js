@@ -34,6 +34,7 @@ const S = {
   focused: null,          // instance id that last got a click (or asked for focus): receives key events
 };
 const GRID = 8;
+const INTERACTIVE = 'button,input,textarea,select,a,label,[contenteditable="true"],[data-ws-nodrag],.ws-resize';
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
 const uid = (w) => `${w}-${Math.random().toString(36).slice(2, 7)}`;
 
@@ -398,15 +399,36 @@ class Instance {
     const hIdx = path.findIndex((n) => n.hasAttribute?.('data-ws-drag'));
     const handle = hIdx >= 0 && !path.slice(0, hIdx).some((n) => n.matches?.('button,input,textarea,select,a,[data-ws-nodrag]'));
     if (onControl) return;
-    if (!(onResize || S.edit || inTitle || handle || e.ctrlKey)) return;
+    if (!(onResize || S.edit || inTitle || handle || e.ctrlKey)) {
+      // Drag from any empty spot: armed now, started only after the pointer travels a few px, so
+      // clicks still work. Widgets with their own drag-and-drop set frame.dragAnywhere: false.
+      const interactive = path.some((n) => n.matches?.(INTERACTIVE));
+      if (this.style.dragAnywhere === false || interactive) return;
+      const sx = e.clientX, sy = e.clientY;
+      const arm = (ev) => {
+        if (Math.hypot(ev.clientX - sx, ev.clientY - sy) < 6) return;
+        disarm();
+        this.startDrag(e, false, ev);
+      };
+      const disarm = () => { removeEventListener('pointermove', arm, true); removeEventListener('pointerup', disarm, true); };
+      addEventListener('pointermove', arm, true);
+      addEventListener('pointerup', disarm, true);
+      return;
+    }
     e.preventDefault();
     e.stopPropagation();
-    const start = { x: e.clientX, y: e.clientY, ...this.cfg };
+    this.startDrag(e, onResize);
+  }
+
+  startDrag(e, onResize, current = null) {
+    // pointer position and the frame's rect at press time (kept separate: mixing them made the
+    // frame jump so its corner sat under the cursor, and resizes jump to the maximum)
+    const start = { px: e.clientX, py: e.clientY, x: this.cfg.x, y: this.cfg.y, w: this.cfg.w, h: this.cfg.h };
     const snap = (v) => (S.edit ? Math.round(v / GRID) * GRID : Math.round(v));
-    this.el.setPointerCapture(e.pointerId);
+    try { this.el.setPointerCapture(e.pointerId); } catch { /* pointer already released */ }
     this.el.classList.add('ws-dragging');
     const move = (ev) => {
-      const dx = ev.clientX - start.x, dy = ev.clientY - start.y;
+      const dx = ev.clientX - start.px, dy = ev.clientY - start.py;
       if (onResize) {
         const s = this.size;
         this.cfg.w = clamp(snap(start.w + dx), s.minW || 60, s.maxW || innerWidth);
@@ -428,6 +450,7 @@ class Instance {
     this.el.addEventListener('pointermove', move);
     this.el.addEventListener('pointerup', up);
     this.el.addEventListener('pointercancel', up);
+    if (current) move(current);
   }
 }
 
@@ -757,6 +780,7 @@ function launcherMenu(e, el) {
     { kind: 'label', label: 'Theme' },
     { kind: 'seg', value: S.themePack.id, onChange: (id) => call('theme.set', { id }),
       options: S.themes.map((t) => ({ label: t.name, value: t.id })) },
+    { icon: '?', label: 'Help & shortcuts', action: () => { ui.helpDialog(); scheduleRegion(); } },
     { icon: '↻', label: 'Reload all', action: () => location.reload() },
   ]);
   scheduleRegion();
@@ -1008,7 +1032,13 @@ async function boot() {
   S.themes = st.themes || [];
   await applyThemePack(S.config.theme || 'night-cron');
   await applyTheme(st.theme);
-  if (S.config.launcher !== false) ui.launcher(S.config.launcherCorner, launcherMenu);
+  if (S.config.launcher !== false) {
+    const btn = ui.launcher(S.config.launcherCorner, launcherMenu);
+    // First run: point at the menu once (remembered per browser profile; harmless if storage is blocked).
+    let seen = false;
+    try { seen = localStorage.getItem('ws-tip-launcher') === '1'; } catch { /* storage unavailable */ }
+    if (!seen) setTimeout(() => { ui.tip(btn, 'Your widgets menu lives here: add widgets, the Navigator, themes, edit layout and help. Right-click any widget for its own menu.', () => { try { localStorage.setItem('ws-tip-launcher', '1'); } catch { /* ignore */ } scheduleRegion(); }); scheduleRegion(); }, 1500);
+  }
 
   let cfgs = st.layout?.instances;
   if (!cfgs) {

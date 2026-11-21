@@ -3,7 +3,14 @@ below all normal windows, is hidden from Alt-Tab/taskbar/overview, and only acce
 mouse input where widgets actually are (XShape input region). Everything else
 clicks through to the desktop.
 """
-import gi
+import os
+
+WAYLAND_SESSION = bool(os.environ.get("WAYLAND_DISPLAY")) or os.environ.get("XDG_SESSION_TYPE") == "wayland"
+# On Wayland sessions (e.g. GNOME Wayland) run through XWayland: Wayland ignores keep-below,
+# skip-taskbar and window positioning, which is exactly what a desktop layer needs.
+os.environ.setdefault("GDK_BACKEND", "x11")
+
+import gi  # noqa: E402
 
 gi.require_version("Gtk", "3.0")
 gi.require_version("Gdk", "3.0")
@@ -17,12 +24,16 @@ class GtkHost:
     def __init__(self, app):
         self.app = app
         self._region_key = None
+        self._back_timer = 0
         self.win = Gtk.Window(title="WidgetSystem")
         self.win.set_wmclass("widgetsystem", "WidgetSystem")
         self.win.set_decorated(False)
         self.win.set_skip_taskbar_hint(True)
         self.win.set_skip_pager_hint(True)
-        self.win.set_keep_below(True)
+        if WAYLAND_SESSION:
+            self.win.connect("map-event", lambda *_: self._send_to_back_soon(300))
+        else:
+            self.win.set_keep_below(True)
         self.win.set_resizable(False)
         self.win.stick()
         self.win.set_app_paintable(True)
@@ -36,6 +47,7 @@ class GtkHost:
 
         self._place()
         screen.connect("monitors-changed", lambda *_: self._place(notify=True))
+        self.win.connect("configure-event", self._on_configure)
 
         settings = WebKit2.Settings()
         settings.set_enable_developer_extras(True)
@@ -70,6 +82,25 @@ class GtkHost:
         self.win.resize(wa.width, wa.height)
         if notify:
             self.app.bus.emit("host", self.info())
+
+    # The window manager may shift the window away from panels and docks (top bar, Ubuntu dock)
+    # without shrinking it, even when the reported work area is the whole monitor. Fit the window
+    # to the visible part of the monitor from wherever it actually landed.
+    def _on_configure(self, _win, ev):
+        gw = self.win.get_window()
+        if gw is None:
+            return False
+        _, x, y = gw.get_origin()            # root coordinates (ev.x/ev.y are relative to the WM frame)
+        geo = self.geom["monitor"]
+        w, h = geo["x"] + geo["w"] - x, geo["y"] + geo["h"] - y
+        if w > 200 and h > 200 and (ev.width, ev.height) != (w, h):
+            self.win.set_size_request(w, h)
+            self.win.resize(w, h)
+        if (x, y, ev.width, ev.height) != (self.geom["origin"]["x"], self.geom["origin"]["y"], self.geom["size"]["w"], self.geom["size"]["h"]):
+            self.geom["origin"] = {"x": x, "y": y}
+            self.geom["size"] = {"w": ev.width, "h": ev.height}
+            GLib.idle_add(lambda: self.app.bus.emit("host", self.info()) and False)
+        return False
 
     def info(self):
         return {"kind": "gtk-x11", **self.geom}
@@ -111,14 +142,43 @@ class GtkHost:
     def _on_press(self, _view, event):
         if not self.win.is_active():
             self.win.present_with_time(event.time)
+        if WAYLAND_SESSION:
+            self._send_to_back_soon()   # GNOME raises a window on click: go back under the apps
         return False
 
     def focus(self):
         def do():
             self.win.present_with_time(Gdk.CURRENT_TIME)
             self.view.grab_focus()
+            if WAYLAND_SESSION:
+                self._send_to_back_soon()
             return False
         GLib.idle_add(do)
+
+    # GNOME Wayland: Ubuntu's desktop-icons extension (DING) keeps its full-screen transparent
+    # window at the bottom of the *normal* layer with lower(). A keep-below window sits in the
+    # layer under that, so DING covered it and took every click. On Wayland we stay in the normal
+    # layer instead and lower ourselves to its bottom. Mapping a throwaway 1x1 popup then makes
+    # DING lower itself again (it does on every window map), which leaves the stacking
+    # wallpaper < DING < WidgetSystem < apps. Without DING the popup is harmless.
+    def _send_to_back_soon(self, delay=150):
+        if self._back_timer:
+            GLib.source_remove(self._back_timer)
+        self._back_timer = GLib.timeout_add(delay, self._send_to_back)
+        return False
+
+    def _send_to_back(self):
+        self._back_timer = 0
+        gw = self.win.get_window()
+        if gw is None:
+            return False
+        gw.lower()
+        poke = Gtk.Window(type=Gtk.WindowType.POPUP)
+        poke.set_default_size(1, 1)
+        poke.move(-20, -20)
+        poke.show()
+        GLib.timeout_add(80, lambda: (poke.destroy(), False)[1])
+        return False
 
     def eval_js(self, script):
         """Run JavaScript in the shell page (dev/testing). Returns the result as JSON text."""
