@@ -1499,7 +1499,7 @@ agents, coordinated by the WidgetSystem session (the PM).
     - during the hold: `fightT` 0, his position unchanged, 0 moves, 0 damage either way;
     - after release, the fight ran (3 moves in 2 s);
     - a snapshot 5 s into the hold had pixel alpha 8–12 (only the fight vignette, against QA's 92);
-      `/tmp/claude-1000/-home-aidar-Documents-Profession-projects/4af22f3d-5d18-4972-9c15-06c9885776d6/scratchpad/r6_held5s.png`.
+      `scratchpad/r6_held5s.png`.
   - Note (pre-existing since DS-13, not this change): game timers keep firing during the hold, so the
     second starter ally is summoned while held. It stands still until the fight starts. That's harmless.
   - Verdict: Ready for QA.
