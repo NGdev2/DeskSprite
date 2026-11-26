@@ -1461,7 +1461,7 @@ agents, coordinated by the WidgetSystem session (the PM).
   - 2026-11-18 · QA · Accepted · md/tracker edits don't reload; handle live after 3 overlapping remounts
 
 ## DS-15 · The fight-start flash freezes over the screen while the first-fight help holds the fight
-- **Type:** Bug · **Severity:** Low · **Status:** Open · **Reporter:** QA
+- **Type:** Bug · **Severity:** Low · **Status:** Accepted · **Reporter:** QA
 - **Steps:** a first human fight (`sawHelp` unset), so the help opens and holds the fight. Wait 8 s, then
   snapshot.
 - **Observation:**
@@ -1474,11 +1474,53 @@ agents, coordinated by the WidgetSystem session (the PM).
 - **Acceptance:**
   - During a held first fight the start flash fades within ~1 s as usual, or is deferred until the fight starts.
   - A snapshot 5 s into the hold shows no white veil.
+- **Dev notes:**
+  - Root cause confirmed: while the first fight is held, `Game.step()` returns before `fx.update()`, so the start
+    flash (`fx.flash(0.6, '#fff')`) and the start particles froze.
+  - Fix: the held branch also runs `this.fx.update(dt)`. The effects keep fading (flash, particles, shake), while
+    the AI, physics and fight clock still wait.
+  - Speech bubbles: they anchor to their speakers, who are frozen during the hold, so a bubble also stays put
+    until it times out. The one QA saw between the top bar and the ally bar belonged to an app standing high on
+    the screen. Left as is; it's not part of this ticket's acceptance.
+  - Files: `src/game.js`, one hunk in `step()`.
+  - Verified in an isolated instance (first fight, `sawHelp` unset):
+    - `flashA` 0.6 → 0.15 at 0.25 s → 0 at 0.5 s, with `hold` still true and `fightT` 0;
+    - snapshot 5 s into the hold: no white veil. Sampled pixels show only the faint red fight vignette (alpha
+      6–11, against 92 before).
+- **Review:**
+  - One line in the held branch of `step()` (`src/game.js:1051`). `fx.update` is purely cosmetic: particles
+    (they read platforms only for bouncing), fading cracks, bolts, beams, rings, popText, shake, flash and
+    glitch. It changes nothing outside `FX`: no hp, no fight clock, no AI, no objects. Ticketed cracks aren't
+    `healing`, so they don't fade early.
+  - Ticking them while held is right: the start flash, the summon bolt and any healing cracks from the last
+    fight finish instead of freezing on screen.
+  - Re-checked in an isolated instance (port 47871), first fight with `sawHelp` unset:
+    - `flashA` was 0.6 → 0.27 at 0.3 s → 0 at 5 s, with `hold` still true;
+    - during the hold: `fightT` 0, his position unchanged, 0 moves, 0 damage either way;
+    - after release, the fight ran (3 moves in 2 s);
+    - a snapshot 5 s into the hold had pixel alpha 8–12 (only the fight vignette, against QA's 92);
+      `/tmp/claude-1000/-home-aidar-Documents-Profession-projects/4af22f3d-5d18-4972-9c15-06c9885776d6/scratchpad/r6_held5s.png`.
+  - Note (pre-existing since DS-13, not this change): game timers keep firing during the hold, so the
+    second starter ally is summoned while held. It stands still until the fight starts. That's harmless.
+  - Verdict: Ready for QA.
+- **QA (re-test):**
+  - Tested on the uncommitted working-folder diff (`git diff -- src`) applied to a worktree of HEAD aa7018e, in an
+    isolated instance (port 47861).
+  - First human fight with `sawHelp` reset, the help holding the fight:
+    - `fx.flashA` was already 0 at 0.5 s into the hold (before the fix it stayed at 0.6);
+    - a snapshot after 10 s of hold had no white veil (screen pixels (0,0,0,0) and (46,0,0,11), against
+      (255,255,255,92) before);
+    - `?` released the hold and the fight ran (`fightT` 2.1 s).
+  - Perf: not relevant to this change (a one-line fx update during the hold).
+  - **Verdict: Accepted.** The fix still has to be committed.
 - **History:**
   - 2026-11-18 · QA · Open · found while testing DS-13
+  - 2026-11-21 · developer · In Review · effects keep updating while the first fight is held; flash gone in 0.5 s; snapshot at 5 s clean
+  - 2026-11-21 · reviewer · Ready for QA · fx-only tick while held; flash gone, fight still frozen; verified live
+  - 2026-11-26 · QA · Accepted · flash fades within 0.5 s while the help holds the fight; no veil after a 10 s hold (tested on the uncommitted diff)
 
 ## DS-16 · Level-1 fights drag
-- **Type:** Balance / fun · **Severity:** Low · **Status:** Open · **Reporter:** QA
+- **Type:** Balance / fun · **Severity:** Low · **Status:** Ready for QA · **Reporter:** QA
 - **Observation:**
   - Level 1 now has 430 hp, against 300 at L3. Its fights are the longest of any level.
     - Bench (200 fights): median 117 s against 87–95 s at L2–L5. 10% of them run over 140 s, and one ran 153.3 s,
@@ -1490,5 +1532,198 @@ agents, coordinated by the WidgetSystem session (the PM).
   - L1 median duration ≤ ~100 s and no L1 fight over 150 s in a 200-fight bench.
   - The L1 win rate stays at 10–25%. For example, trade some of his hp for more frequent (weaker) moves, or start
     the overtime earlier at L1.
+- **Dev notes:**
+  - Root cause: level 1 had 430 hp and the slowest decisions of any level, so fights were long grinds where he
+    rarely threatened the desk.
+  - Fix, a trade of hp for tempo (`power()` in `src/stickman/brain.js`):
+    - L1 hp 430 → 330;
+    - L1 decisions per second ×1.3;
+    - L1 damage factor 1.7 → 2.0.
+    - Levels 2–5 are unchanged.
+  - Measured with `G.bench(1, 50)` ×4 (200 fights, same start every fight), against the old code in the same
+    session:
+
+    | | old (430 hp) | new | new, repeat run |
+    |---|---|---|---|
+    | wins | 18.5% | 24% | 23.5% |
+    | median duration | 113.9 s | 94.7 s | 98.1 s |
+    | 90th percentile | 127.4 s | 112.9 s | 115 s |
+    | longest | 142.6 s | 123.7 s | 141 s |
+    | over 150 s | 0 | 0 | 0 |
+    | under 45 s | 0 | 0 | 0 |
+    | autopilot wins with ≥ 80 desk hp | 12% | 11% | 8.5% |
+
+    - Pooled over the two new runs (400 fights): 23.75% wins and 9.75% such stomps.
+    - In L1, win rate and stomps move together: settings that brought wins under ~20% pushed stomps over 10%
+      (1.92 damage: 19.5% wins, 11.5% stomps). So L1 sits in the upper half of its 10–25% band.
+  - L2 side-effect check (L2 code unchanged): three 100-fight runs gave 31%, 18% and 33%, pooled 27.3% (band
+    20–35%); stomps 6%; median 91–93 s.
+  - Real-time L1 autopilot fight: see History.
+- **Review:**
+  - `power()` (`src/stickman/brain.js`): HP[0] 330, DMG[0] 2.0, and `speed × 1.3` only when `k === 0`. Since
+    `k = max(0, lvl − 1)`, that's level 1 only. `power.speed` is only read by the fight decision timer
+    (`think`), so chill is unaffected.
+  - Checked through `fightLevel` overrides:
+
+    | level | hp | dmg | decisions/s |
+    |---|---|---|---|
+    | 1 | 330 | 2.0 | 1.30 |
+    | 2 | 300 | 1.77 | 1.16 |
+    | 3 | 300 | 1.82 | 1.32 |
+    | 5 | 310 | 1.72 | 1.64 |
+    | 6 | 325 | 1.72 | 1.80 |
+    | 9 | 370 | 1.72 | 2.28 |
+
+    Levels 2+ are unchanged, and a stats-level-1 fight gets the same numbers as an override to level 1.
+  - Observation for QA: L1 now decides faster than L2 (1.30 vs 1.16) and about as fast as L3. The step from L1
+    to L2 is now about kit (weapons, possession, ultimate), not tempo. That's a design call, not a bug.
+  - Spot check, `G.bench(1, 50)` in an isolated instance (port 47871):
+    - durations reproduce: median 97.2 s, p90 114.4 s, max 126 s, none over 150 s or under 45 s;
+    - his wins 6/50 = 12% (dev: ~24%);
+    - autopilot wins with ≥ 80 desk hp: 8/50 = 16% (dev: 8.5–11%);
+    - saved stats unchanged.
+    The win and stomp gaps are within what 50 fights can show (±6 points), but they lean toward the bottom of
+    the 10–25% band and above DS-9's 1-in-10 stomp limit. QA's 200-fight re-bench should settle it.
+  - Code verdict: Ready for QA. The balance acceptance is QA's.
+- **QA (re-test, partial; stopped for the session wrap-up):**
+  - The diff is live in my worktree instance: L1 `maxHp` 330, `speed` 1.3, `dmg` 2.0; L2 unchanged (300 hp,
+    1.16).
+  - **Still needed:**
+    - the 200-fight L1 bench and the 100-fight L2 bench, to settle the gap between the developer's 23.75% wins /
+      9.75% lopsided and the reviewer's 12% / 16%;
+    - one real-time L1 fight watched as a viewer, to judge whether L1 deciding faster than L2 feels right.
+    - A first attempt didn't run: a shell-quoting slip in my script, caught before any fights started.
+  - Status stays Ready for QA.
 - **History:**
   - 2026-11-18 · QA · Open · from the round-2 benches and the real-time L1 fight
+  - 2026-11-21 · developer · In Review · L1 trades hp for tempo: median 113.9 → ~96 s, longest ≤ 141 s, wins ~24% (400 fights); L2 unchanged at 27%
+  - 2026-11-21 · developer · In Review · real-time L1 autopilot fight: 85.4 s (QA's was 122.9 s); autopilot won with 43 desk hp left; he did 93.5 desk damage
+  - 2026-11-21 · reviewer · Ready for QA · L1-only tempo/hp/dmg change verified; durations reproduce (median 97 s, max 126 s); wins 12%/stomps 16% in 50 fights, for QA's re-bench
+  - 2026-11-26 · QA · Ready for QA (unchanged) · re-test started: L1 numbers verified live; 200×L1 + 100×L2 bench still to run
+
+## DS-17 · At night he naps in 10-second loops, yawning and stretching every time
+- **Type:** Bug · **Severity:** Medium · **Status:** Open · **Reporter:** QA
+- **Observation:**
+  - 28 minutes of real-time chill, 23:31–23:59, so in night mode. 22 naps:
+    - 8–12 s each once his energy was 94–100;
+    - as little as 4 s between naps (gaps: 104, 4, 6, 4, 147, 76 … 4, 110, 35 s).
+  - Each nap starts and ends with a line, so these were the most repeated stick lines: "*stretch*" 11×,
+    "Mmm… what did I miss?" 8×, "*yawn*" 7×, "Getting sleepy…" 4×, "*yaaawn* Good nap." 4×.
+  - Probable cause (`brain.js`):
+    - `actSleep` has weight 12 at night regardless of energy;
+    - the nap ends as soon as `energy > 98 && t > 10`.
+    So a rested stickman keeps dozing off and waking straight back up.
+- **Perf** (same run; the user's desktop was busy, with their own WidgetSystem running):
+  - DeskSprite's web process: 3.4–6 % while dormant, 10–17 % awake.
+  - Every wake also restarts the render loop (0 → 4–6 renders/s).
+- **Acceptance:**
+  - At night with energy > 90 he takes at most about one nap per 10 minutes, or naps last ≥ 60 s.
+  - The sleepy and wake lines don't repeat within 5 minutes.
+- **History:**
+  - 2026-11-26 · QA · Open · exploratory session
+
+## DS-18 · Chill talk is too frequent and repeats lines minutes apart
+- **Type:** UX / fun · **Severity:** Medium · **Status:** Open · **Reporter:** QA
+- **Observation** (28 min of chill, the stickman and 4 apps):
+  - 262 lines, 9.4 per minute (5.5 from the stickman), but only 113 distinct.
+  - Most repeated:
+    - Dev: "Tabs. Not spaces. Fight me." 11×, once twice in 4 s; "TODO: fix later (2019)" 8×;
+    - Cog: "Toggle. Untoggle. Toggle." 8×;
+    - Brushy: "Who needs layers? I live in the moment." 6×.
+  - 73 times a speaker repeated the same line within 3 minutes.
+  - The pools are small (`STICK.chill` has 7 lines), and `line()` / `appLine()` pick at random with no memory.
+  - The user likes the variety of behaviour, but the words wear out quickly.
+- **Acceptance:**
+  - No speaker repeats a line within 5 minutes; the picker avoids its last N lines.
+  - Chill talk averages ≤ ~4 lines/min with 4 apps on screen, measured over 20 min.
+- **History:**
+  - 2026-11-26 · QA · Open · exploratory session
+
+## DS-19 · Dragging a widget he stands on doesn't carry him; he teleports or gets flung
+- **Type:** Bug · **Severity:** Low · **Status:** Open · **Reporter:** QA
+- **Repro:** put him on Mochi's widget, then move it with `inst.moveTo()`.
+- **Observation:**
+  - **Smooth drag** (12 px right and 5 px up every 33 ms, 40 steps):
+    - for about 1 s he stayed at his old height, ending 120 px below the widget's new top, still "on" it;
+    - then he jumped ~330 px sideways and fell.
+    - Widget platforms only refresh about once a second (`refreshWidgets` on a 1 s timer, plus the end-of-drag
+      `layout` event).
+  - **One-step moves:**
+    - +340 px sideways flung him into the air (x +397, airborne) and he fell to the floor;
+    - moving the widget up made him fall through.
+  - Removing the widget under him works fine: he falls and lands.
+- **Acceptance:** while a widget he stands on is dragged, he rides along smoothly, or hops off from his own spot.
+  He never teleports sideways or hangs below the widget's top.
+- **History:**
+  - 2026-11-26 · QA · Open · exploratory session (edge cases)
+
+## DS-20 · In front of a full-screen widget he can ride something invisible and sleep floating off-screen
+- **Type:** Bug · **Severity:** Low · **Status:** Open · **Reporter:** QA
+- **Observation:**
+  - A tear into a full-screen Clock put him in the front layer.
+  - He then did `ride` (an app, which lives behind the sheet) and fell asleep at x = 19, 58 px above the floor,
+    half off the left screen edge, floating over the clock.
+  - 20 s later he was back in the back layer.
+- **Acceptance:** in the front layer he only rides or rests on things drawn in front (the floor and hole ledges),
+  and he never sleeps partly off-screen.
+- **History:**
+  - 2026-11-26 · QA · Open · exploratory session (tears)
+
+## DS-21 · Apps clip at the screen edges and pile onto Mochi
+- **Type:** UX · **Severity:** Low · **Status:** Open · **Reporter:** QA
+- **Observation** (28 min of chill):
+  - Apps often stop with their centre 13–22 px from the edge, half off-screen. In 2-second samples:
+    Brushy 69×, Dev 21×, Calc 10×.
+  - A file copy's label was cut at the left edge.
+  - Three apps and the stickman crowded onto Mochi's widget top, standing on and over the sleeping Mochi (Cog's
+    body over Mochi, Dev and Calc overlapping).
+- **Acceptance:**
+  - Strolls stay at least half a body width from the screen edges.
+  - Creatures on a widget top spread out and keep clear of Mochi's spot.
+- **History:**
+  - 2026-11-26 · QA · Open · exploratory session
+
+## DS-22 · Idea: let tears linger, so the hole is part of the show
+- **Type:** Feature · **Severity:** Low · **Status:** Open · **Reporter:** QA
+- **Pitch:**
+  - A tear lasts about 10 s: fsck's default repair delay is 8 s, and fsck claims the ticket at once. So "sit in
+    the hole" rarely happens, and the tear is barely seen.
+  - After tearing in, he could sit in the hole and peek out, wave or dangle his legs for 5–8 s before fsck shows
+    up, maybe with a line to fsck ("Just a minute!").
+- **Acceptance:** in a tear, the hole and his reaction are visible for at least ~6 s before the repair starts.
+- **History:**
+  - 2026-11-26 · QA · Open · exploratory session idea
+
+## QA resume notes (2026-11-26)
+- **Exploratory session, done:**
+  - 28 min of chill with perf (DS-17, DS-18, DS-21);
+  - one forced tear, repaired by fsck in about 10 s (DS-20, DS-22);
+  - real-time L2 and L4 fights;
+  - edge cases: moving, resizing and removing the widget he stands on (DS-19); Night Cron ↔ Glass mid-chill,
+    which worked; hot reload, which kept the handle live and the apps restored; RSS over 28 min, 218–320 MB with
+    no drift.
+  - DS-15 Accepted on the uncommitted diff.
+- **Fights as a viewer:**
+  - L2: 113.6 s, the autopilot won with 34 desk hp left after the desk was down to 7. Almost all his desk damage
+    was blasts (138 of 150), so the fight reads as one-note.
+  - L4: 86.1 s, he won with 92/300 hp left. Ink Storm spikes did 86 damage; a good, varied fight.
+- **Perf** (top 5 s samples; Xwayland and gnome-shell are noisy because the user's own WidgetSystem was running,
+  its web process at 3–29 %; machine idle 85–96 %):
+
+  | scenario | DS web % | Xwayland % | gnome-shell % | renders/s |
+  |---|---|---|---|---|
+  | no DeskSprite | ~2 (1.4–3.2) | ~19 (9–30) | ~20 (19–28) | – |
+  | chill, awake | ~12.7 (8.8–15.4) | ~22 (11–28) | ~19 (17–26) | 4 (1–8) |
+  | chill, 28 min (awake and dormant) | median 10.6 (3.4–17.1) | median 19.9 (9.7–46) | median 14.5 | 4.6 (0 dormant) |
+  | fight (L2, L4) | ~58 (47–76) | ~50 (35–56) | ~22 (19–28) | ~51 |
+
+  Only the DS web column is a solid A/B. In fights, Xwayland is clearly higher (+~30 points).
+- **Environment notes:**
+  - The test instance draws on the user's real desktop. At ~00:04 the full-screen Clock was collapsed and the
+    nest was dragged from (1008,24) to (1027,196), most likely by the user. Keep full-screen tests short.
+  - Clicks and keys on Wayland weren't tested; there is no input injection.
+- **Next:**
+  - DS-16 benches: 200×L1 and 100×L2, plus one real-time L1 fight.
+  - A natural (unforced) tear with an 8 s repair.
+  - Mochi and fsck interacting with him over longer runs.
+  - Clicks and Esc on Wayland, if input can be driven.
