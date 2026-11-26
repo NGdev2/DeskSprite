@@ -1048,6 +1048,7 @@ export class Game {
 
     if (this.mode === 'fight' && this.arena?.hold) {
       this.arena.update(dt);
+      this.fx.update(dt);   // effects keep fading (the start flash), the fight itself waits
       return true;
     }
     this.rebuildPlatforms();
